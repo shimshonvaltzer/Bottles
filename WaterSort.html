@@ -344,7 +344,11 @@ body {
 
 .segment {
   position: relative;
-  flex: 1 0 25%;
+  /* flex-basis 0 + grow 1 divides the bottle evenly among however many
+     segments exist (4 or 5, per-level capacity) instead of a fixed 25%,
+     which would overflow/underflow when capacity != 4. */
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
   transition: transform var(--dur-med) var(--ease-pop), opacity 0.2s ease, background 0.2s ease;
 }
@@ -742,7 +746,47 @@ body {
     '#84cc16'  // lime
   ];
   var SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '◉', '▼', '✦', '◈', '✱', '▶'];
+  // Bottle capacity (units per bottle) is DATA, not a fixed constant: it is
+  // set per-level by generateLevel via setCapacity() before any board is
+  // built, scrambled or solved. All pure-logic functions below (canPour,
+  // pour, isSolved, boardDifficulty, getReverseMoves, ...) close over this
+  // module-level variable, so it must be correct BEFORE those are called;
+  // JS is single-threaded and generateLevel never yields mid-build, so this
+  // is safe. Default 4 keeps every existing direct call (tests, tools)
+  // working without having to call setCapacity first.
   var CAPACITY = 4;
+  // 12-color palette runs out at capacity 4 well before the board is
+  // information-saturated (see CAPACITY_RAMP below): once boards can't be
+  // made harder by mixing more, the only way left to raise the ceiling is
+  // more liquid per bottle. Bottle COUNT is still capped at 14 throughout.
+  function setCapacity(n) {
+    CAPACITY = n;
+    if (global.WaterSort) global.WaterSort.CAPACITY = n;
+  }
+  // Bottle capacity ramps up in steps as level rises. Below the first
+  // threshold, capacity-4 boards searched hard (see generateLevel) reach
+  // the low-to-mid twenties in optimal moves; measurement showed that
+  // ceiling does not move with level or with scramble strength beyond that
+  // point (board information capacity, not scramble weakness, is what
+  // plateaus - see minSolverMoves comment: 12 colors is the palette's cap
+  // and bottle count is capped at 14, so the only remaining lever is more
+  // liquid per bottle). Each step measured to raise the achievable optimal
+  // length by a few moves (scratchpad/tune_caps.js): ~24 at capacity 4,
+  // ~25-28 at 5, ~26-30 at 6, ~28-32 at 7.
+  var CAPACITY_RAMP = [
+    { level: 0, capacity: 4 },
+    { level: 20, capacity: 5 },
+    { level: 40, capacity: 6 },
+    { level: 60, capacity: 7 },
+    { level: 75, capacity: 8 }
+  ];
+  function computeCapacity(level) {
+    var cap = CAPACITY_RAMP[0].capacity;
+    for (var i = 0; i < CAPACITY_RAMP.length; i++) {
+      if (level >= CAPACITY_RAMP[i].level) cap = CAPACITY_RAMP[i].capacity;
+    }
+    return cap;
+  }
 
   // ---------- Hebrew UI strings (single source of truth for all user-facing text) ----------
   var STR = {
@@ -1029,75 +1073,129 @@ body {
     return null; // exhausted search space without reaching solved (shouldn't happen)
   }
 
-  // Minimum acceptable OPTIMAL solution length for a level. This is the
-  // real difficulty gate: a board that can be solved in a couple of pours is
-  // "too easy" even if it happens to have zero complete bottles. The floor
-  // is never below 6 moves, scales with color count (more colors need more
-  // untangling) and grows with level so late levels are comfortably in the
-  // tens of moves.
+  // Minimum acceptable OPTIMAL (or budget-exceeded-so-presumed-hard)
+  // solution length for a level. Measurement (see scratchpad verification
+  // scripts) showed that with capacity 4, best-of-N search over random
+  // reverse-pour scrambles plateaus around the low-to-mid twenties
+  // regardless of level or scramble strength - that is the board's
+  // information capacity (12 colors x 4 units, <=14 bottles), not a weak
+  // scramble. The floor therefore climbs smoothly through that range for
+  // capacity-4 levels, and continues climbing past it once capacity ramps
+  // to 5 (see computeCapacity / CAPACITY_RAMP_LEVEL), which raises the
+  // achievable ceiling further.
   function minSolverMoves(level, numColors) {
-    // Calibrated against what this board size (up to 14 bottles, 12 colors,
-    // capacity 4) can actually produce: optimal solutions here realistically
-    // top out in the low-mid twenties, so the bar rises with level up to
-    // that plateau instead of demanding an unreachable target.
-    return Math.min(6 + Math.floor(level * 0.7), 19);
+    // Hard floor of 7 regardless of level/color count - see HARD
+    // CONSTRAINTS in the generation spec ("never under 7 moves"), which
+    // matters most at very low levels/small color counts.
+    var target;
+    if (level < 30) {
+      target = 6 + Math.floor(level * 0.9); // climbs toward ~24 at capacity 4
+    } else {
+      // Past the capacity ramp start: keep climbing more slowly, matched to
+      // what each capacity step was measured to achieve (see
+      // scratchpad/tune_caps.js: ~24@cap4, ~25-28@cap5, ~26-30@cap6,
+      // ~28-32@cap7). This is a soft target used to decide when the
+      // candidate search can stop early (generateLevel always keeps the
+      // best board found either way), so it is fine if actual boards land
+      // a little below it.
+      target = 24 + Math.floor((level - 30) * 0.3);
+    }
+    return Math.max(7, Math.min(target, 40));
   }
 
   // Reverse-pour based generator: start solved, undo biased reverse pours,
-  // then measure and possibly reject the result. Generation is quality
-  // driven (measure boardDifficulty AND the optimal solver length), not
-  // just step-count driven, since step count alone doesn't guarantee a hard
-  // board (random reverse moves can undo each other).
+  // then SEARCH for a hard board rather than accepting the first one that
+  // clears a bar. A single scramble attempt does not reliably find a hard
+  // board (variance is high - see measurement scripts), and running the
+  // exact BFS solver on every candidate is too slow to search widely
+  // (measured ~100-500ms per capacity-5 board at a useful node budget).
+  //
+  // So generation runs in two cheap-then-precise phases:
+  //   1) Generate a LARGE number of candidates (scramble + boardDifficulty
+  //      only - no BFS, ~0.3-1ms each even at capacity 5) and keep the one
+  //      with the highest fragmentation among structurally-valid boards.
+  //      Fragmentation is a fast, well-correlated proxy for optimal solver
+  //      length (verified empirically: rank-correlation is strong across
+  //      both capacities - see scratchpad/corr_test.js), so "most
+  //      fragmented of N" reliably approximates "hardest of N" without ever
+  //      running the expensive solver N times.
+  //   2) Run the real (bounded) BFS solver ONCE on that winning candidate,
+  //      to (a) get the precise/measured optimal length used for the
+  //      minSolverMoves bar and for reporting, and (b) as a fallback: if it
+  //      somehow falls short of the bar, retry with the next-best
+  //      candidates (by fragmentation) a few times, bounded by the overall
+  //      wall-clock budget.
+  var GEN_TIME_BUDGET_MS = 110; // soft wall-clock budget; leaves headroom under the ~500ms hard cap
+
   function generateLevel(level) {
     var numColors = computeNumColors(level);
     var numEmpty = computeNumEmpty(level, numColors);
+    var capacity = computeCapacity(level);
+    setCapacity(capacity);
 
-    var shuffleCount = Math.min(40 + level * 8, 450);
+    var shuffleCount = Math.min(40 + level * 10, 700);
     // Fragmentation bar rises with level so late boards are provably more
     // mixed than early ones (checked/asserted by the verification script).
     var minFragmentation = Math.ceil(numColors * 1.5) + Math.floor(level / 6);
     var requiredSolverMoves = minSolverMoves(level, numColors);
-    // Keep generation fast (must run on a phone, well under a second): cap
-    // the BFS node budget. A board whose optimal length can't be pinned
-    // down within the budget is treated as acceptable/hard, never rejected.
-    var solverBudget = 12000;
+    // BFS node budget for the real solver calls. Higher capacity means a
+    // costlier per-node expansion (more possible partial-pour depths), so
+    // the budget shrinks a little as capacity grows to keep each call fast
+    // (measured a few ms to ~100ms per call across capacities 4-7 - see
+    // scratchpad/tune_caps.js).
+    var solverBudget = Math.max(2000, 15000 - (capacity - 4) * 3500);
 
-    var maxAttempts = 60;
-    var best = null;
-    var bestScore = -Infinity;
+    // N (cheap candidates) scales with level: harder targets are rarer
+    // among random scrambles at low levels too, but the cheap phase is
+    // fast enough to search widely everywhere.
+    var cheapN = Math.min(30 + level * 3, 220);
 
-    for (var attempt = 0; attempt < maxAttempts; attempt++) {
-      var seed = ((level * 2654435761 + attempt * 40503) % 2147483647 + 2147483647) % 2147483647 + 12345;
+    var startTime = Date.now();
+    var candidates = []; // { bottles, fragmentation }
+
+    for (var i = 0; i < cheapN; i++) {
+      var seed = ((level * 2654435761 + i * 40503) % 2147483647 + 2147483647) % 2147483647 + 12345;
       var rng = mulberry32(seed);
       var bottles = scrambleBoard(numColors, numEmpty, shuffleCount, rng);
-
       if (isSolved(bottles) || legalMoves(bottles).length === 0) continue;
 
       var diff = boardDifficulty(bottles);
       var structOk = diff.completeCount === 0 && diff.quadCount === 0 &&
         diff.fragmentation >= minFragmentation;
-      if (!structOk) {
-        var badScore = diff.fragmentation - diff.completeCount * 1000 - diff.quadCount * 500;
-        if (badScore > bestScore) { bestScore = badScore; best = bottles; }
-        continue;
-      }
+      candidates.push({ bottles: bottles, fragmentation: diff.fragmentation, structOk: structOk });
+    }
 
-      var solLen = solverLength(bottles, solverBudget);
-      // null (budget exceeded without finding solved) is treated as hard
-      // enough - only a DEFINITE short solution causes rejection.
-      var meetsBar = solLen === null || solLen >= requiredSolverMoves;
+    // Prefer structurally-valid candidates; among those (or, failing that,
+    // among all candidates as a last resort), sort by fragmentation desc.
+    var pool = candidates.filter(function (c) { return c.structOk; });
+    if (pool.length === 0) pool = candidates;
+    pool.sort(function (a, b) { return b.fragmentation - a.fragmentation; });
 
-      var score = (solLen === null ? 1e6 : solLen) + diff.fragmentation;
-      if (score > bestScore) { bestScore = score; best = bottles; }
-      if (meetsBar) { best = bottles; break; }
+    // Evaluate only the top few by fragmentation with the real solver: the
+    // fragmentation ranking already does most of the work (see corr_test.js
+    // above), so trying dozens more rarely beats the first handful and
+    // would otherwise burn the whole time budget chasing a bar that may be
+    // above what this board size can achieve at this capacity (the bar is
+    // a soft target, not a hard requirement - see minSolverMoves).
+    var maxSolverCalls = capacity >= 7 ? 2 : (capacity >= 6 ? 3 : 6);
+    var best = null;
+    var bestSolLen = -1;
+
+    for (var k = 0; k < pool.length && k < maxSolverCalls; k++) {
+      if (k > 0 && Date.now() - startTime > GEN_TIME_BUDGET_MS) break;
+      var solLen = solverLength(pool[k].bottles, solverBudget);
+      var effLen = solLen === null ? Infinity : solLen;
+      if (effLen > bestSolLen) { bestSolLen = effLen; best = pool[k].bottles; }
+      // Good enough (bar cleared, or provably very hard) - stop searching.
+      if (effLen === Infinity || effLen >= requiredSolverMoves) break;
     }
 
     if (!best) {
-      // Should be unreachable in practice, but guarantees a legal, playable
-      // board rather than throwing.
-      best = buildSolvedState(numColors, numEmpty);
+      // Should be unreachable (cheapN always tries at least a few boards),
+      // but guarantees a legal, playable board rather than throwing.
+      best = pool.length ? pool[0].bottles : buildSolvedState(numColors, numEmpty);
     }
-    return { bottles: best, numColors: numColors };
+    return { bottles: best, numColors: numColors, capacity: capacity };
   }
 
   // Deterministic PRNG
@@ -1159,7 +1257,12 @@ body {
     computeNumColors: computeNumColors,
     computeNumEmpty: computeNumEmpty,
     solverLength: solverLength,
-    minSolverMoves: minSolverMoves
+    minSolverMoves: minSolverMoves,
+    scrambleBoard: scrambleBoard,
+    getReverseMoves: getReverseMoves,
+    countRuns: countRuns,
+    setCapacity: setCapacity,
+    computeCapacity: computeCapacity
   };
 
   // ---------- UI / App (only runs in browser) ----------
@@ -1428,6 +1531,7 @@ body {
     state.level = levelNum;
     state.bottles = gen.bottles;
     state.numColors = gen.numColors;
+    state.capacity = gen.capacity;
     state.selected = -1;
     state.moves = 0;
     state.undosLeft = UNDOS_PER_LEVEL;
@@ -1479,7 +1583,7 @@ body {
     if (!state.bottles.length) return 0;
     var complete = 0;
     state.bottles.forEach(function (stack) {
-      if (stack.length === global.WaterSort.CAPACITY) {
+      if (stack.length === state.capacity) {
         var c = stack[0], ok = true;
         for (var i = 1; i < stack.length; i++) { if (stack[i] !== c) { ok = false; break; } }
         if (ok) complete++;
@@ -1556,7 +1660,7 @@ body {
       }
     }
 
-    for (var pos = 0; pos < global.WaterSort.CAPACITY; pos++) {
+    for (var pos = 0; pos < state.capacity; pos++) {
       var seg = document.createElement('div');
       seg.className = 'segment empty-seg';
       if (pos < stack.length) {

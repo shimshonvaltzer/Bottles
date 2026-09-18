@@ -332,7 +332,11 @@ body {
 
 .segment {
   position: relative;
-  flex: 1 0 25%;
+  /* flex-basis 0 + grow 1 divides the bottle evenly among however many
+     segments exist (4 or 5, per-level capacity) instead of a fixed 25%,
+     which would overflow/underflow when capacity != 4. */
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
   transition: transform var(--dur-med) var(--ease-pop), opacity 0.2s ease, background 0.2s ease;
 }
