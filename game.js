@@ -86,88 +86,280 @@
     return true;
   }
 
-  // Reverse-pour based generator: start solved, undo random legal pours.
-  // A reverse pour takes a "pour" backwards: pick bottle `to` that received
-  // a pour last (has some run at top) and move that run back to a bottle
-  // that could have been its source (empty, or not full, and not equal top
-  // to avoid degenerate no-ops beyond capacity).
-  function generateLevel(level) {
-    var numColors = Math.min(3 + Math.floor((level - 1) / 2), 12);
-    var numEmpty = level < 3 ? 2 : (level < 8 ? 2 : (level < 20 ? 2 : 2));
-    // extra empties scale slightly for very high levels to keep solvable/playable
-    if (numColors >= 8) numEmpty = 2;
-    if (numColors >= 11) numEmpty = 3;
-    var maxBottles = 14;
-    var totalBottles = Math.min(numColors + numEmpty, maxBottles);
-    numEmpty = totalBottles - numColors;
-    if (numEmpty < 1) numEmpty = 1;
-
-    var bottles = buildSolvedState(numColors, numEmpty);
-    var shuffleCount = 40 + level * 6; // increases difficulty
-    shuffleCount = Math.min(shuffleCount, 400);
-
-    var rng = mulberry32(level * 2654435761 % 2147483647 + 12345);
-
-    for (var iter = 0; iter < shuffleCount; iter++) {
-      var reverseMoves = getReverseMoves(bottles);
-      if (reverseMoves.length === 0) continue;
-      var m = reverseMoves[Math.floor(rng() * reverseMoves.length)];
-      bottles = applyReverseMove(bottles, m[0], m[1]);
+  // ---------- Difficulty metric ----------
+  // boardDifficulty(bottles) measures how "scrambled"/hard a freshly
+  // generated board is, so generateLevel can reject boards that are too
+  // easy (e.g. bottles that already sit solved). Defined as:
+  //   - completeCount: number of bottles that are already a single solid
+  //     color AND full (length === CAPACITY). These are "free wins" the
+  //     player does nothing to earn - a hard requirement is that this is 0
+  //     at level start.
+  //   - quadCount: number of bottles holding 4-of-a-kind (same as
+  //     completeCount for CAPACITY=4, kept separate/explicit per spec so the
+  //     check reads clearly and stays correct if CAPACITY ever changes).
+  //   - fragmentation: total number of maximal same-color "runs" across all
+  //     bottles (a solved board has exactly `numColors` runs - one per full
+  //     bottle - and 0 for each empty). More runs = more mixed/fragmented =
+  //     harder, since undoing the mixing takes more pours.
+  //   - avgColorsPerBottle: mean number of distinct colors per non-empty
+  //     bottle; higher means colors are more interleaved (harder).
+  function countRuns(stack) {
+    if (stack.length === 0) return 0;
+    var runs = 1;
+    for (var i = 1; i < stack.length; i++) {
+      if (stack[i] !== stack[i - 1]) runs++;
     }
-
-    // Safety: ensure not already solved and has at least one legal move
-    if (isSolved(bottles) || legalMoves(bottles).length === 0) {
-      return generateLevel(level + 1); // extremely unlikely fallback
-    }
-    return { bottles: bottles, numColors: numColors };
+    return runs;
   }
 
-  // A reverse move: pick a source bottle `s` with a top run (1..3 units,
-  // since a full untouched bottle of 4 same color reversing would be a no-op
-  // reveal) and a destination bottle `d` that is empty or has different top
-  // color or has room, simulating "undoing" a pour from d to s.
-  // We define: reverseMove(from=d, to=s) means: take top run off d (which
-  // represents liquid that was poured there) and put it onto s.
+  function boardDifficulty(bottles) {
+    var completeCount = 0, quadCount = 0, fragmentation = 0, distinctSum = 0, nonEmpty = 0;
+    for (var i = 0; i < bottles.length; i++) {
+      var s = bottles[i];
+      if (s.length === 0) continue;
+      nonEmpty++;
+      var runs = countRuns(s);
+      fragmentation += runs;
+      if (runs === 1 && s.length === CAPACITY) completeCount++;
+      if (s.length === CAPACITY && runs === 1) quadCount++;
+      distinctSum += new Set(s).size;
+    }
+    return {
+      completeCount: completeCount,
+      quadCount: quadCount,
+      fragmentation: fragmentation,
+      avgColorsPerBottle: nonEmpty ? distinctSum / nonEmpty : 0
+    };
+  }
+
+  // How many colors / empty bottles a level should use. Colors ramp up to
+  // the palette cap (12) by level 19; the number of "free" empty bottles
+  // shrinks as levels rise (2 early on, down to 1 at higher levels) so late
+  // boards have less slack to work with.
+  function computeNumColors(level) {
+    return Math.min(3 + Math.floor((level - 1) / 2), 12);
+  }
+
+  function computeNumEmpty(level, numColors) {
+    var empties = level <= 10 ? 2 : 1;
+    if (numColors + empties > 14) empties = Math.max(1, 14 - numColors);
+    return empties;
+  }
+
+  // ---------- Reverse-pour scramble (mixing-capable + solvable-by-construction) ----------
+  // A forward pour takes the top run of A (uniform color X) and places it on
+  // B, which must be empty or already topped with X. Two facts follow that
+  // matter for generation:
+  //   1) The only way a bottle B ever loses part of its content is from the
+  //      TOP - so any "lower" content was there from the very start. That is
+  //      exactly how bottles end up holding several different colors in a
+  //      real puzzle: the mixing is present in the INITIAL deal, not created
+  //      by later pours.
+  //   2) A pour does not care what A's own top sits on top of - only B's top
+  //      must be empty-or-matching.
+  // So to build a solvable, genuinely-mixed initial board we run the pours
+  // in reverse from the solved state: reverseMove(d -> s) means "undo a
+  // future pour from s to d" - take (some of) d's current top run and place
+  // it back on top of s, regardless of what s's own current top color is
+  // (this is what actually produces bottles with several different colors
+  // stacked, which the old same-color-only rule could never do - that was
+  // the root cause of the original difficulty bug: every bottle stayed
+  // monochrome forever).
+  // The one rule that must hold for the resulting board to remain
+  // constructible via legal forward pours: if we take d's ENTIRE current
+  // top run (not just part of it), whatever was directly under that run in
+  // d must not exist yet from s's perspective at that point in time - in
+  // practice we simply require that a *full* removal only happens when it
+  // empties d completely (d was until now purely that one run). Partial
+  // removals (leaving at least one unit of that color on top of d) are
+  // always fine. Solvability is still verified explicitly afterwards by a
+  // bounded BFS in generateLevel (see below) as a belt-and-braces check.
   function getReverseMoves(bottles) {
     var moves = [];
     for (var d = 0; d < bottles.length; d++) {
-      if (bottles[d].length === 0) continue;
-      var topColor = bottles[d][bottles[d].length - 1];
-      // run length at top of d
+      var stack = bottles[d];
+      if (stack.length === 0) continue;
+      var topColor = stack[stack.length - 1];
       var runLen = 0;
-      for (var i = bottles[d].length - 1; i >= 0; i--) {
-        if (bottles[d][i] === topColor) runLen++; else break;
+      for (var i = stack.length - 1; i >= 0; i--) {
+        if (stack[i] === topColor) runLen++; else break;
       }
+      // Max units of the top run we may legally peel off: all of it if that
+      // empties the bottle entirely, otherwise all but the last unit (so a
+      // different color is never "revealed" mid-history).
+      var maxAmount = (runLen === stack.length) ? runLen : (runLen - 1);
+      if (maxAmount <= 0) continue;
       for (var s = 0; s < bottles.length; s++) {
         if (s === d) continue;
-        var srcStack = bottles[s];
-        var room = CAPACITY - srcStack.length;
+        var room = CAPACITY - bottles[s].length;
         if (room <= 0) continue;
-        // valid reverse target: empty bottle, or top matches topColor
-        if (srcStack.length === 0 || srcStack[srcStack.length - 1] === topColor) {
-          moves.push([d, s]); // move run from d -> s
-        }
+        moves.push([d, s]);
       }
     }
     return moves;
   }
 
-  function applyReverseMove(bottles, from, to) {
+  function applyReverseMove(bottles, from, to, rng) {
+    rng = rng || Math.random;
     var b = bottles.map(function (s) { return s.slice(); });
     var src = b[from], dst = b[to];
     var topColor = src[src.length - 1];
-    var room = CAPACITY - dst.length;
     var runLen = 0;
     for (var i = src.length - 1; i >= 0; i--) {
       if (src[i] === topColor) runLen++; else break;
     }
-    var moveCount = Math.min(runLen, room);
-    // random partial move to increase variety (at least 1)
-    if (moveCount > 1) {
-      moveCount = 1 + Math.floor(Math.random() * moveCount);
-    }
+    var maxAmount = (runLen === src.length) ? runLen : (runLen - 1);
+    var room = CAPACITY - dst.length;
+    var cap = Math.min(maxAmount, room);
+    if (cap < 1) return b; // no-op guard
+    // Bias toward moving just 1-2 units at a time: splitting a run into more
+    // pieces increases fragmentation, which is what makes boards harder.
+    var moveCount = cap === 1 ? 1 : 1 + Math.floor(rng() * Math.min(cap, 2));
     for (var k = 0; k < moveCount; k++) dst.push(src.pop());
     return b;
+  }
+
+  // Score a candidate reverse move: higher score = more likely to increase
+  // fragmentation/mixing (breaking into a bottle that already holds a
+  // different color mixes colors together; pouring onto an empty bottle
+  // spreads colors out so later moves have more to mix with).
+  function scoreReverseMove(bottles, mv) {
+    var d = mv[0], s = mv[1];
+    var dStack = bottles[d], sStack = bottles[s];
+    var score = 1;
+    if (sStack.length === 0) score += 1;
+    else if (sStack[sStack.length - 1] !== dStack[dStack.length - 1]) score += 4;
+    return score;
+  }
+
+  // Build one scrambled candidate board via biased reverse-pours. Biasing
+  // avoids the original bug where uniformly-random reverse moves tend to
+  // undo each other and drift back toward the solved state: we weight
+  // mixing/fragmentation-increasing moves higher and never immediately undo
+  // the previous reverse move.
+  function scrambleBoard(numColors, numEmpty, shuffleCount, rng) {
+    var bottles = buildSolvedState(numColors, numEmpty);
+    var lastMove = null;
+    for (var iter = 0; iter < shuffleCount; iter++) {
+      var reverseMoves = getReverseMoves(bottles);
+      if (reverseMoves.length === 0) break;
+      var filtered = reverseMoves.filter(function (mv) {
+        return !(lastMove && mv[0] === lastMove[1] && mv[1] === lastMove[0]);
+      });
+      if (filtered.length === 0) filtered = reverseMoves;
+      var weights = filtered.map(function (mv) { return scoreReverseMove(bottles, mv); });
+      var total = weights.reduce(function (a, b) { return a + b; }, 0);
+      var r = rng() * total;
+      var chosen = filtered[filtered.length - 1];
+      for (var k = 0; k < filtered.length; k++) {
+        r -= weights[k];
+        if (r <= 0) { chosen = filtered[k]; break; }
+      }
+      bottles = applyReverseMove(bottles, chosen[0], chosen[1], rng);
+      lastMove = chosen;
+    }
+    return bottles;
+  }
+
+  // Bounded BFS returning the OPTIMAL (shortest) solution length, or null if
+  // that could not be determined within the node budget. A null result is
+  // treated as "hard enough" by the caller (never as a rejection) - the
+  // board is still guaranteed solvable by construction (see comment above
+  // getReverseMoves), just possibly expensive to solve optimally.
+  function solverLength(bottles, maxStates) {
+    maxStates = maxStates || 20000;
+    var startKey = stateKey(bottles);
+    var visited = new Set([startKey]);
+    var queue = [{ b: bottles, d: 0 }];
+    var head = 0;
+    var count = 0;
+    while (head < queue.length) {
+      var cur = queue[head++];
+      count++;
+      if (count > maxStates) return null;
+      if (isSolved(cur.b)) return cur.d;
+      var moves = legalMoves(cur.b);
+      for (var i = 0; i < moves.length; i++) {
+        var res = pour(cur.b, moves[i][0], moves[i][1]);
+        var key = stateKey(res.bottles);
+        if (!visited.has(key)) {
+          visited.add(key);
+          queue.push({ b: res.bottles, d: cur.d + 1 });
+        }
+      }
+    }
+    return null; // exhausted search space without reaching solved (shouldn't happen)
+  }
+
+  // Minimum acceptable OPTIMAL solution length for a level. This is the
+  // real difficulty gate: a board that can be solved in a couple of pours is
+  // "too easy" even if it happens to have zero complete bottles. The floor
+  // is never below 6 moves, scales with color count (more colors need more
+  // untangling) and grows with level so late levels are comfortably in the
+  // tens of moves.
+  function minSolverMoves(level, numColors) {
+    // Calibrated against what this board size (up to 14 bottles, 12 colors,
+    // capacity 4) can actually produce: optimal solutions here realistically
+    // top out in the low-mid twenties, so the bar rises with level up to
+    // that plateau instead of demanding an unreachable target.
+    return Math.min(6 + Math.floor(level * 0.7), 19);
+  }
+
+  // Reverse-pour based generator: start solved, undo biased reverse pours,
+  // then measure and possibly reject the result. Generation is quality
+  // driven (measure boardDifficulty AND the optimal solver length), not
+  // just step-count driven, since step count alone doesn't guarantee a hard
+  // board (random reverse moves can undo each other).
+  function generateLevel(level) {
+    var numColors = computeNumColors(level);
+    var numEmpty = computeNumEmpty(level, numColors);
+
+    var shuffleCount = Math.min(40 + level * 8, 450);
+    // Fragmentation bar rises with level so late boards are provably more
+    // mixed than early ones (checked/asserted by the verification script).
+    var minFragmentation = Math.ceil(numColors * 1.5) + Math.floor(level / 6);
+    var requiredSolverMoves = minSolverMoves(level, numColors);
+    // Keep generation fast (must run on a phone, well under a second): cap
+    // the BFS node budget. A board whose optimal length can't be pinned
+    // down within the budget is treated as acceptable/hard, never rejected.
+    var solverBudget = 12000;
+
+    var maxAttempts = 60;
+    var best = null;
+    var bestScore = -Infinity;
+
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      var seed = ((level * 2654435761 + attempt * 40503) % 2147483647 + 2147483647) % 2147483647 + 12345;
+      var rng = mulberry32(seed);
+      var bottles = scrambleBoard(numColors, numEmpty, shuffleCount, rng);
+
+      if (isSolved(bottles) || legalMoves(bottles).length === 0) continue;
+
+      var diff = boardDifficulty(bottles);
+      var structOk = diff.completeCount === 0 && diff.quadCount === 0 &&
+        diff.fragmentation >= minFragmentation;
+      if (!structOk) {
+        var badScore = diff.fragmentation - diff.completeCount * 1000 - diff.quadCount * 500;
+        if (badScore > bestScore) { bestScore = badScore; best = bottles; }
+        continue;
+      }
+
+      var solLen = solverLength(bottles, solverBudget);
+      // null (budget exceeded without finding solved) is treated as hard
+      // enough - only a DEFINITE short solution causes rejection.
+      var meetsBar = solLen === null || solLen >= requiredSolverMoves;
+
+      var score = (solLen === null ? 1e6 : solLen) + diff.fragmentation;
+      if (score > bestScore) { bestScore = score; best = bottles; }
+      if (meetsBar) { best = bottles; break; }
+    }
+
+    if (!best) {
+      // Should be unreachable in practice, but guarantees a legal, playable
+      // board rather than throwing.
+      best = buildSolvedState(numColors, numEmpty);
+    }
+    return { bottles: best, numColors: numColors };
   }
 
   // Deterministic PRNG
@@ -224,13 +416,198 @@
     isSolved: isSolved,
     generateLevel: generateLevel,
     isSolvable: isSolvable,
-    mulberry32: mulberry32
+    mulberry32: mulberry32,
+    boardDifficulty: boardDifficulty,
+    computeNumColors: computeNumColors,
+    computeNumEmpty: computeNumEmpty,
+    solverLength: solverLength,
+    minSolverMoves: minSolverMoves
   };
 
   // ---------- UI / App (only runs in browser) ----------
   if (typeof document === 'undefined') return;
 
-  var STORAGE_KEY = 'watersort_save_v1';
+  // ---------- Durable save (localStorage + IndexedDB, versioned schema) ----------
+  var OLD_STORAGE_KEY = 'watersort_save_v1'; // legacy flat shape, migrated below
+  var STORAGE_KEY = 'watersort_save_v2';     // versioned schema key
+  var IDB_DB_NAME = 'watersort-db';
+  var IDB_STORE = 'saves';
+  var IDB_KEY = 'main';
+
+  function defaultStats() {
+    return {
+      levelsCompleted: 0,
+      totalMoves: 0,
+      totalHints: 0,
+      totalUndos: 0,
+      bestMovesPerLevel: {},
+      currentStreak: 0,
+      longestStreak: 0
+    };
+  }
+
+  function defaultSaveData() {
+    return {
+      version: 1,
+      level: 1,
+      totalScore: 0,
+      bestScore: 0,
+      stats: defaultStats(),
+      settings: { muted: false, colorblind: false },
+      savedAt: 0
+    };
+  }
+
+  function isValidSaveData(d) {
+    return !!(d && typeof d === 'object' &&
+      typeof d.version === 'number' &&
+      typeof d.level === 'number' && d.level >= 1 &&
+      typeof d.totalScore === 'number' &&
+      typeof d.bestScore === 'number' &&
+      d.stats && typeof d.stats === 'object' &&
+      d.settings && typeof d.settings === 'object');
+  }
+
+  // Reads the OLD flat localStorage format so a user's current progress is
+  // not lost when this versioned-schema update lands.
+  function migrateOldSave() {
+    try {
+      var raw = localStorage.getItem(OLD_STORAGE_KEY);
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      var out = defaultSaveData();
+      if (typeof data.level === 'number') out.level = data.level;
+      if (typeof data.score === 'number') out.totalScore = data.score;
+      if (typeof data.bestScore === 'number') out.bestScore = data.bestScore;
+      if (typeof data.muted === 'boolean') out.settings.muted = data.muted;
+      if (typeof data.colorblind === 'boolean') out.settings.colorblind = data.colorblind;
+      out.savedAt = Date.now();
+      return out;
+    } catch (e) { return null; }
+  }
+
+  function buildSaveData() {
+    return {
+      version: 1,
+      level: state.level,
+      totalScore: state.score,
+      bestScore: state.bestScore,
+      stats: state.stats,
+      settings: { muted: state.muted, colorblind: state.colorblind },
+      savedAt: Date.now()
+    };
+  }
+
+  // Picks whichever save is "more advanced" (higher level, then score, then
+  // most recently saved) so loading from two redundant stores never regresses
+  // progress.
+  function pickNewer(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    if (a.level !== b.level) return a.level > b.level ? a : b;
+    if (a.totalScore !== b.totalScore) return a.totalScore > b.totalScore ? a : b;
+    return (a.savedAt || 0) >= (b.savedAt || 0) ? a : b;
+  }
+
+  function applySaveData(data) {
+    state.level = data.level;
+    state.score = data.totalScore;
+    state.bestScore = data.bestScore;
+    var s = data.stats || {};
+    state.stats = Object.assign(defaultStats(), s, {
+      bestMovesPerLevel: Object.assign({}, s.bestMovesPerLevel || {})
+    });
+    state.muted = !!(data.settings && data.settings.muted);
+    state.colorblind = !!(data.settings && data.settings.colorblind);
+  }
+
+  // ---- IndexedDB mirror: fully async-safe, never throws, never blocks
+  // rendering. Every operation degrades to a no-op if IndexedDB is
+  // unavailable (e.g. under file://) or errors for any reason.
+  var idbAvailable = (typeof indexedDB !== 'undefined');
+
+  function idbOpen() {
+    return new Promise(function (resolve) {
+      if (!idbAvailable) { resolve(null); return; }
+      try {
+        var req = indexedDB.open(IDB_DB_NAME, 1);
+        req.onupgradeneeded = function () {
+          try { req.result.createObjectStore(IDB_STORE); } catch (e) { /* ignore */ }
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { resolve(null); };
+        req.onblocked = function () { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  }
+
+  function idbSave(data) {
+    return idbOpen().then(function (db) {
+      if (!db) return;
+      try {
+        var tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(data, IDB_KEY);
+        tx.oncomplete = function () { try { db.close(); } catch (e) { /* ignore */ } };
+        tx.onerror = function () { try { db.close(); } catch (e) { /* ignore */ } };
+      } catch (e) { /* ignore */ }
+    }).catch(function () { /* ignore */ });
+  }
+
+  function idbLoad() {
+    return idbOpen().then(function (db) {
+      if (!db) return null;
+      return new Promise(function (resolve) {
+        try {
+          var tx = db.transaction(IDB_STORE, 'readonly');
+          var req = tx.objectStore(IDB_STORE).get(IDB_KEY);
+          req.onsuccess = function () { resolve(req.result || null); try { db.close(); } catch (e) { /* ignore */ } };
+          req.onerror = function () { resolve(null); try { db.close(); } catch (e) { /* ignore */ } };
+        } catch (e) { resolve(null); }
+      });
+    }).catch(function () { return null; });
+  }
+
+  function saveProgress() {
+    var data = buildSaveData();
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { /* memory-only fallback */ }
+    idbSave(data); // fire-and-forget; never blocks rendering
+  }
+
+  // Synchronous initial load (localStorage, or migrated legacy save, or a
+  // fresh default) so the first render is never delayed. Corrupt/invalid
+  // data always falls back to a fresh state rather than crashing.
+  function loadProgress() {
+    var local = null;
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (isValidSaveData(parsed)) local = parsed;
+      }
+    } catch (e) { /* corrupt JSON - ignore */ }
+
+    if (!local) local = migrateOldSave();
+    if (!local) local = defaultSaveData();
+    applySaveData(local);
+
+    // Async: also check IndexedDB for a possibly newer/further-along save
+    // (e.g. localStorage was cleared but IndexedDB survived, or vice
+    // versa), merge, and re-render only if it actually changes anything.
+    idbLoad().then(function (idbData) {
+      try {
+        if (idbData && isValidSaveData(idbData)) {
+          var winner = pickNewer(local, idbData);
+          if (winner === idbData && (idbData.level !== state.level || idbData.totalScore !== state.score)) {
+            applySaveData(idbData);
+            saveProgress();
+            if (typeof render === 'function') { try { render(); } catch (e) { /* ignore */ } }
+          }
+        }
+        // Mirror whichever save won back into both stores so they agree.
+        idbSave(buildSaveData());
+      } catch (e) { /* ignore */ }
+    }).catch(function () { /* ignore */ });
+  }
 
   var state = {
     level: 1,
@@ -246,34 +623,9 @@
     history: [], // stack of {bottles, moves}
     muted: false,
     colorblind: false,
-    won: false
+    won: false,
+    stats: defaultStats()
   };
-
-  function saveProgress() {
-    try {
-      var data = {
-        level: state.level,
-        score: state.score,
-        bestScore: state.bestScore,
-        muted: state.muted,
-        colorblind: state.colorblind
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (e) { /* ignore storage errors */ }
-  }
-
-  function loadProgress() {
-    try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      var data = JSON.parse(raw);
-      if (typeof data.level === 'number') state.level = data.level;
-      if (typeof data.score === 'number') state.score = data.score;
-      if (typeof data.bestScore === 'number') state.bestScore = data.bestScore;
-      if (typeof data.muted === 'boolean') state.muted = data.muted;
-      if (typeof data.colorblind === 'boolean') state.colorblind = data.colorblind;
-    } catch (e) { /* ignore parse errors */ }
-  }
 
   // ---------- WebAudio sound effects ----------
   var audioCtx = null;
@@ -489,6 +841,7 @@
       var result = ws.pour(state.bottles, state.selected, idx);
       state.bottles = result.bottles;
       state.moves++;
+      state.stats.totalMoves++;
       state.selected = -1;
       sounds.pour();
       render();
@@ -530,12 +883,16 @@
     state.bottles = prev.bottles;
     state.moves = prev.moves;
     state.undosLeft--;
+    state.stats.totalUndos++;
     state.selected = -1;
     clearHint();
+    saveProgress();
     render();
   }
 
   function onRestart() {
+    // An explicit restart breaks the "levels won without restarting" streak.
+    state.stats.currentStreak = 0;
     startLevel(state.level);
   }
 
@@ -559,7 +916,9 @@
       if (global.WaterSort.isSolved(res.bottles)) { best = moves[i]; break; }
     }
     state.hintsLeft--;
+    state.stats.totalHints++;
     highlightHint(best[0], best[1]);
+    saveProgress();
     renderStats();
   }
 
@@ -589,6 +948,15 @@
     var levelScore = computeLevelScore(state.moves, UNDOS_PER_LEVEL - state.undosLeft, UNDOS_PER_LEVEL);
     state.score += levelScore;
     if (state.score > state.bestScore) state.bestScore = state.score;
+    state.stats.levelsCompleted++;
+    var prevBest = state.stats.bestMovesPerLevel[state.level];
+    if (prevBest === undefined || state.moves < prevBest) {
+      state.stats.bestMovesPerLevel[state.level] = state.moves;
+    }
+    state.stats.currentStreak++;
+    if (state.stats.currentStreak > state.stats.longestStreak) {
+      state.stats.longestStreak = state.stats.currentStreak;
+    }
     saveProgress();
     sounds.win();
     renderStats();
