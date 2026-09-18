@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Water Sort Puzzle</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="header">
+    <h1 class="title">Water&nbsp;Sort</h1>
+    <div class="stats">
+      <div class="stat"><span class="stat-label">Level</span><span id="stat-level" class="stat-value">1</span></div>
+      <div class="stat"><span class="stat-label">Score</span><span id="stat-score" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">Moves</span><span id="stat-moves" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">Best</span><span id="stat-best" class="stat-value">0</span></div>
+    </div>
+    <div class="header-toggles">
+      <button id="btn-mute" class="icon-btn" title="Mute / unmute sound" aria-pressed="false">🔊</button>
+      <button id="btn-colorblind" class="icon-btn" title="Colorblind-friendly symbols" aria-pressed="false">👁</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <div id="stuck-banner" class="stuck-banner" hidden>
+      No moves left! Try <strong>Undo</strong> or <strong>Restart</strong>.
+    </div>
+    <div id="board" class="board"></div>
+  </main>
+
+  <footer class="controls">
+    <button id="btn-undo" class="ctrl-btn">
+      <span class="ctrl-icon">↶</span>
+      <span class="ctrl-text">Undo</span>
+      <span class="ctrl-count" id="undo-count">5</span>
+    </button>
+    <button id="btn-restart" class="ctrl-btn">
+      <span class="ctrl-icon">⟲</span>
+      <span class="ctrl-text">Restart</span>
+    </button>
+    <button id="btn-add" class="ctrl-btn">
+      <span class="ctrl-icon">＋</span>
+      <span class="ctrl-text">Add Bottle</span>
+      <span class="ctrl-count" id="add-count">2</span>
+    </button>
+    <button id="btn-hint" class="ctrl-btn">
+      <span class="ctrl-icon">💡</span>
+      <span class="ctrl-text">Hint</span>
+      <span class="ctrl-count" id="hint-count">3</span>
+    </button>
+  </footer>
+
+  <div id="win-overlay" class="win-overlay" hidden>
+    <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+    <div class="win-card">
+      <h2>Level Complete!</h2>
+      <div id="win-stars" class="win-stars">★★★</div>
+      <div id="win-score" class="win-score">+100 points</div>
+      <button id="btn-next" class="ctrl-btn primary">Next Level →</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
