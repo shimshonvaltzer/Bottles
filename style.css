@@ -227,19 +227,20 @@ body {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  height: 180px;
+  height: 220px;
 }
 
 /* ---------- Bottle ---------- */
 .bottle {
   position: relative;
-  width: 54px;
-  height: 168px;
+  width: 68px;
+  height: 208px;
   cursor: pointer;
   display: flex;
   align-items: flex-end;
   transition: transform var(--dur-med) var(--ease-pop), filter var(--dur-med) ease;
   outline: none;
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 10px rgba(80, 100, 200, 0.15));
 }
 
 .bottle.selected {
@@ -303,38 +304,43 @@ body {
   position: relative;
   width: 100%;
   height: 100%;
-  background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+  background: linear-gradient(180deg, rgba(10, 14, 40, 0.9), rgba(10, 14, 40, 0.65));
   border: 3px solid var(--rim);
   border-top: none;
-  border-radius: 0 0 26px 26px;
+  /* Test-tube: straight sides, fully rounded (semicircular) bottom. Radius
+     is driven by the tube's own width so it stays a true semicircle at any
+     size (mobile breakpoints shrink width + this together). */
+  border-radius: 0 0 34px 34px;
   display: flex;
   flex-direction: column-reverse;
   overflow: hidden;
   box-shadow:
-    inset -6px 0 10px rgba(0,0,0,0.25),
-    inset 6px 0 10px rgba(255,255,255,0.05),
-    0 6px 14px rgba(0,0,0,0.35);
+    inset -8px 0 14px rgba(0,0,0,0.35),
+    inset 4px 0 10px rgba(255,255,255,0.04),
+    0 8px 18px rgba(0,0,0,0.4);
   transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
 }
 
-/* the neck / rim of the bottle */
+/* the neck / rim of the bottle: squared-off open top with a thin flared rim */
 .liquid-wrap::before {
   content: '';
   position: absolute;
-  top: -8px;
-  inset-inline: 8px;
+  top: -9px;
+  inset-inline: -2px;
   height: 10px;
   background: transparent;
-  border-inline-start: 3px solid var(--rim);
-  border-inline-end: 3px solid var(--rim);
-  border-radius: 4px 4px 0 0;
+  border-inline-start: 4px solid var(--rim);
+  border-inline-end: 4px solid var(--rim);
+  border-radius: 3px 3px 0 0;
 }
 
 .segment {
   position: relative;
   /* flex-basis 0 + grow 1 divides the bottle evenly among however many
-     segments exist (4 or 5, per-level capacity) instead of a fixed 25%,
-     which would overflow/underflow when capacity != 4. */
+     segments exist (4-8, per-level capacity) instead of a fixed 25%,
+     which would overflow/underflow when capacity != 4. Bands sit flush
+     against each other (no gap/border-radius) so the liquid reads as one
+     continuous column with crisp flat boundaries between colors. */
   flex: 1 1 0;
   min-height: 0;
   width: 100%;
@@ -354,14 +360,15 @@ body {
   opacity: 0;
 }
 
-.segment:not(.empty-seg)::after {
+/* Flat top surface highlight only on the topmost filled band of the whole
+   column (not per-segment, which would create ridges between bands). */
+.segment.liquid-surface::after {
   content: '';
   position: absolute;
-  top: 2px;
-  inset-inline: 4px;
-  height: 30%;
-  background: linear-gradient(180deg, rgba(255,255,255,0.45), rgba(255,255,255,0));
-  border-radius: 4px;
+  top: 0;
+  inset-inline: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.35);
   pointer-events: none;
 }
 
@@ -378,17 +385,23 @@ body {
   pointer-events: none;
 }
 
-/* glossy highlight overlay on the glass itself */
+/* glossy vertical highlight running down the left side of the glass, plus a
+   subtle darker shading on the right edge, for a glassy cylinder feel */
 .glass-overlay {
   position: absolute;
-  top: 4px;
-  inset-inline-start: 6px;
-  width: 8px;
-  height: calc(100% - 20px);
-  background: linear-gradient(180deg, rgba(255,255,255,0.5), rgba(255,255,255,0.05));
-  border-radius: 6px;
+  top: 2px;
+  inset-inline-start: 0;
+  width: 100%;
+  height: calc(100% - 6px);
+  background:
+    linear-gradient(90deg,
+      rgba(255,255,255,0.35) 0%,
+      rgba(255,255,255,0.12) 14%,
+      rgba(255,255,255,0) 30%,
+      rgba(255,255,255,0) 78%,
+      rgba(0,0,0,0.28) 100%);
+  border-radius: 0 0 34px 34px;
   pointer-events: none;
-  filter: blur(0.5px);
 }
 
 /* ---------- Controls / footer ---------- */
@@ -614,9 +627,10 @@ body {
 
 /* ---------- Responsive ---------- */
 @media (max-width: 480px) {
-  .bottle { width: 42px; height: 138px; }
-  .bottle-wrap { height: 150px; }
-  .board { gap: 12px 8px; }
+  .bottle { width: 56px; height: 172px; }
+  .bottle-wrap { height: 184px; }
+  .liquid-wrap, .glass-overlay { border-radius: 0 0 28px 28px; }
+  .board { gap: 14px 8px; }
   .title { font-size: 1.05rem; }
   .stat-value { font-size: 0.9rem; }
   .stat-level .stat-value { font-size: 1.1rem; }
@@ -625,8 +639,10 @@ body {
 }
 
 @media (max-width: 360px) {
-  .board { grid-template-columns: repeat(5, 1fr); gap: 10px 6px; }
-  .bottle { width: 36px; }
+  .board { grid-template-columns: repeat(5, 1fr); gap: 12px 6px; }
+  .bottle { width: 50px; height: 160px; }
+  .bottle-wrap { height: 172px; }
+  .liquid-wrap, .glass-overlay { border-radius: 0 0 25px 25px; }
   .stat { min-width: 46px; padding: 6px 8px; }
   .stat-level { min-width: 60px; }
 }

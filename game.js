@@ -7,18 +7,18 @@
 
   // ---------- Palette ----------
   var COLORS = [
-    '#22d3ee', // cyan
-    '#facc15', // yellow
-    '#3b82f6', // blue
-    '#f472b6', // pink
-    '#e11d48', // magenta/red-pink
-    '#a855f7', // purple
-    '#f97316', // orange
-    '#22c55e', // green
-    '#ef4444', // red
-    '#14b8a6', // teal
-    '#fbcfe8', // light-pink
-    '#84cc16'  // lime
+    '#00e5ff', // cyan
+    '#ffe000', // yellow
+    '#3366ff', // blue
+    '#ff2f92', // hot pink/magenta
+    '#ff2222', // red
+    '#b336ff', // purple
+    '#ff8c00', // orange
+    '#12c454', // green
+    '#8b4a2b', // brown
+    '#9aa5b8', // slate gray
+    '#ffffff', // white
+    '#c6ff00'  // lime
   ];
   var SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '◉', '▼', '✦', '◈', '✱', '▶'];
   // Bottle capacity (units per bottle) is DATA, not a fixed constant: it is
@@ -945,6 +945,9 @@
         var isTop = pos >= stack.length - runLen;
         if (idx === state.selected && isTop) {
           seg.classList.add('lifted');
+        }
+        if (pos === stack.length - 1) {
+          seg.classList.add('liquid-surface');
         }
         if (state.colorblind) {
           var label = document.createElement('span');
