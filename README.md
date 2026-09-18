@@ -10,7 +10,37 @@ no build step, no npm install. Open `index.html` directly in a browser
 - `style.css` — dark navy theme, glossy test-tube bottle styling, responsive grid
 - `game.js` — game logic (procedural level generation, pour/undo logic,
   scoring, sound effects, persistence, rendering)
+- `WaterSort.html` — single-file offline build (see below)
+- `build-single.js` — generates `WaterSort.html` from the files above
 - `README.md` — this file
+
+## Single-file offline build
+
+`WaterSort.html` is a self-contained build of the game: `style.css` and
+`game.js` are inlined directly into one HTML file, with the manifest,
+icon links, service worker registration, and "Install app" button
+removed (none of them apply to a standalone file). It makes zero network
+or subresource requests, which matters because opening `index.html` from
+an Android file manager loads it over a `content://` URI — a context
+where Chrome refuses to fetch the relative `style.css`/`game.js`
+subresources, leaving an unstyled, non-functional page. `WaterSort.html`
+sidesteps that entirely: download or copy this one file anywhere (a
+phone's Downloads folder, a USB drive, an email attachment) and open it
+directly, from `content://`, `file://`, `http://`, or a desktop
+double-click, and it renders and plays fully offline.
+
+Progress (level, score, best score, mute, colorblind setting) is saved
+to `localStorage`, which is scoped per file location/origin — so
+progress made in `WaterSort.html` opened from one location (or the
+`index.html` PWA) is separate from progress made opening the same file
+from a different location.
+
+Regenerate it after changing `index.html`, `style.css`, or `game.js` by
+running:
+
+```
+node build-single.js
+```
 
 ## How to play
 
