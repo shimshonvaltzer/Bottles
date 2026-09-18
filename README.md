@@ -56,3 +56,33 @@ levels 1–30, exactly 10 bottles render on load, pours and undo work as
 expected, and there are no console errors. Those scripts live outside
 this repository (in the development scratchpad) since they are dev-time
 tooling, not part of the shipped game.
+
+## Installing as an app (PWA)
+
+Water Sort Puzzle is a fully installable, offline-capable Progressive
+Web App — no app store needed.
+
+**Android (Chrome):** open the game's URL, tap the browser menu (⋮),
+then tap **"Add to Home screen"** (or use the install icon that appears
+in the header once the browser detects the app is installable). The
+game will then launch full-screen from your home screen and continue to
+work without an internet connection.
+
+**iPhone / iPad (Safari):** open the game's URL, tap the **Share**
+button, then choose **"Add to Home Screen"**. Safari does not support
+the automatic install prompt, so this manual step is required.
+
+Once installed, a service worker caches all game assets so the puzzle
+keeps working offline, including on repeat launches from the home
+screen icon.
+
+## Hosting on GitHub Pages
+
+1. Push this repository to GitHub (already done for this branch).
+2. In the repository, go to **Settings → Pages**.
+3. Under **Build and deployment**, set **Source** to "Deploy from a
+   branch", pick branch `claude/zealous-volta-75p00n` and folder
+   `/ (root)`, then save.
+4. GitHub Pages will publish the site at the URL shown on that settings
+   page. The included `.nojekyll` file ensures all files (including
+   `manifest.json` and `sw.js`) are served as-is.
