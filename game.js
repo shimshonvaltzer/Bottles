@@ -10,13 +10,13 @@
     '#00e5ff', // cyan
     '#ffe000', // yellow
     '#3366ff', // blue
-    '#ff2f92', // hot pink/magenta
+    '#ff7ab8', // hot pink/magenta
     '#ff2222', // red
     '#b336ff', // purple
     '#ff8c00', // orange
     '#12c454', // green
     '#8b4a2b', // brown
-    '#9aa5b8', // slate gray
+    '#6e6f7a', // slate gray
     '#ffffff', // white
     '#c6ff00'  // lime
   ];
