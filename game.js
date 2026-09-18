@@ -732,6 +732,7 @@
     bottles: [],
     numColors: 3,
     selected: -1,
+    animating: false,
     moves: 0,
     undosLeft: 5,
     addsLeft: 2,
@@ -808,6 +809,7 @@
     state.numColors = gen.numColors;
     state.capacity = gen.capacity;
     state.selected = -1;
+    state.animating = false;
     state.moves = 0;
     state.undosLeft = UNDOS_PER_LEVEL;
     state.addsLeft = ADDS_PER_LEVEL;
@@ -965,11 +967,35 @@
     bottle.appendChild(glass);
     wrap.appendChild(bottle);
 
-    bottle.addEventListener('click', function () { onBottleClick(idx); });
+    onFastTap(bottle, function () { onBottleClick(idx); });
     bottle.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onBottleClick(idx); }
     });
     return wrap;
+  }
+
+  // ---------- Fast tap handling ----------
+  // On touch devices a plain 'click' listener only fires after touchend AND
+  // after the browser has ruled out a double-tap/scroll gesture, which adds
+  // real, measurable latency. pointerdown fires immediately on contact, so
+  // we act on that instead and use 'click' only as a fallback for input
+  // methods that don't dispatch pointer events (or if pointerdown handling
+  // is ever suppressed), guarding against acting twice for the same tap.
+  var supportsPointerEvents = typeof window !== 'undefined' && !!window.PointerEvent;
+  function onFastTap(target, handler) {
+    var suppressNextClick = false;
+    if (supportsPointerEvents) {
+      target.addEventListener('pointerdown', function (e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        suppressNextClick = true;
+        handler(e);
+        setTimeout(function () { suppressNextClick = false; }, 500);
+      });
+    }
+    target.addEventListener('click', function (e) {
+      if (suppressNextClick) { suppressNextClick = false; return; }
+      handler(e);
+    });
   }
 
   function colorForIndex(i) {
@@ -983,43 +1009,73 @@
     });
   }
 
+  // Selecting/deselecting a bottle only ever toggles a class on the two
+  // bottles involved - it never needs to rebuild the whole board, so the
+  // visual feedback for a tap lands in the same frame instead of waiting
+  // on a full re-render.
+  function setSelectedVisual(idx, selected) {
+    var wrapEl = el.board.children[idx];
+    if (!wrapEl) return;
+    var bottleEl = wrapEl.querySelector('.bottle');
+    if (!bottleEl) return;
+    bottleEl.classList.toggle('selected', selected);
+    var stack = state.bottles[idx];
+    if (!stack || !stack.length) return;
+    var topColor = stack[stack.length - 1];
+    var runLen = 0;
+    for (var i = stack.length - 1; i >= 0; i--) {
+      if (stack[i] === topColor) runLen++; else break;
+    }
+    var segs = bottleEl.querySelectorAll('.segment');
+    for (var pos = stack.length - runLen; pos < stack.length; pos++) {
+      var seg = segs[pos];
+      if (seg) seg.classList.toggle('lifted', selected);
+    }
+  }
+
   function onBottleClick(idx) {
-    if (state.won) return;
+    if (state.won || state.animating) return;
     clearHint();
     if (state.selected === -1) {
       if (state.bottles[idx].length === 0) return;
       state.selected = idx;
-      sounds.select();
-      render();
+      setSelectedVisual(idx, true);
+      // Sound is fired async (rAF) so WebAudio setup/resume never delays
+      // the visual selection feedback that just happened above.
+      requestAnimationFrame(function () { sounds.select(); });
       return;
     }
     if (state.selected === idx) {
+      setSelectedVisual(idx, false);
       state.selected = -1;
-      render();
       return;
     }
     var ws = global.WaterSort;
     if (ws.canPour(state.bottles, state.selected, idx)) {
+      var fromIdx = state.selected;
+      setSelectedVisual(fromIdx, false);
       pushHistory();
-      var result = ws.pour(state.bottles, state.selected, idx);
+      var result = ws.pour(state.bottles, fromIdx, idx);
+      var movedColor = state.bottles[fromIdx][state.bottles[fromIdx].length - 1];
       state.bottles = result.bottles;
       state.moves++;
       state.stats.totalMoves++;
       state.selected = -1;
-      sounds.pour();
-      render();
-      animatePour(idx);
-      if (ws.isSolved(state.bottles)) {
-        setTimeout(onWin, 350);
-      }
+      requestAnimationFrame(function () { sounds.pour(); });
+      animatePourTransition(fromIdx, idx, movedColor, result.moved, function () {
+        render();
+        if (ws.isSolved(state.bottles)) {
+          setTimeout(onWin, 350);
+        }
+      });
     } else {
-      sounds.error();
+      requestAnimationFrame(function () { sounds.error(); });
       var fromEl = el.board.children[state.selected];
       var toEl = el.board.children[idx];
       shake(fromEl);
       shake(toEl);
+      setSelectedVisual(state.selected, false);
       state.selected = -1;
-      render();
     }
   }
 
@@ -1031,17 +1087,140 @@
     setTimeout(function () { b.classList.remove('shake'); }, 320);
   }
 
-  function animatePour(toIdx) {
-    var wrapEl = el.board.children[toIdx];
-    if (!wrapEl) return;
-    var b = wrapEl.querySelector('.bottle');
-    if (!b) return;
-    b.classList.add('pour-bounce');
-    setTimeout(function () { b.classList.remove('pour-bounce'); }, 300);
+  function prefersReducedMotion() {
+    return typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  // Animate a pour between two already-rendered bottles: the source tilts
+  // toward the destination, its poured segments fade/lift away, a colored
+  // stream travels from source mouth to destination mouth, and the
+  // destination's new segments rise into place. `done` is always called
+  // exactly once, synchronously if reduced motion is requested, and it is
+  // what actually re-renders the board with the authoritative game state -
+  // so a stuck or interrupted animation can never leave stale/incorrect
+  // bottles on screen.
+  function animatePourTransition(fromIdx, toIdx, color, moved, done) {
+    var fromWrap = el.board.children[fromIdx];
+    var toWrap = el.board.children[toIdx];
+    if (!fromWrap || !toWrap || !moved || prefersReducedMotion()) {
+      done();
+      return;
+    }
+    var fromBottle = fromWrap.querySelector('.bottle');
+    var toBottle = toWrap.querySelector('.bottle');
+    if (!fromBottle || !toBottle) { done(); return; }
+
+    state.animating = true;
+    var streamEl = null;
+    var finished = false;
+    function cleanupAndFinish() {
+      if (finished) return;
+      finished = true;
+      fromBottle.classList.remove('pour-tilt');
+      fromBottle.style.removeProperty('--tilt-angle');
+      fromBottle.style.removeProperty('--tilt-x');
+      fromBottle.style.removeProperty('--tilt-y');
+      if (streamEl && streamEl.parentNode) streamEl.parentNode.removeChild(streamEl);
+      state.animating = false;
+      done();
+    }
+    // Absolute safety net: even if a rect/layout read throws, or a timer is
+    // dropped by a background tab, the game must never stay locked out of
+    // input or show a bottle stuck mid-tilt.
+    var safety = setTimeout(cleanupAndFinish, 700);
+
+    try {
+      var fromRect = fromBottle.getBoundingClientRect();
+      var toRect = toBottle.getBoundingClientRect();
+      var fromCx = fromRect.left + fromRect.width / 2;
+      var toCx = toRect.left + toRect.width / 2;
+      var dx = toCx - fromCx;
+      var dy = toRect.top - fromRect.top;
+      // Tilt toward whichever side the destination is actually on, in real
+      // screen coordinates - this is correct for RTL layouts and for
+      // destinations on a different row, because getBoundingClientRect
+      // already reflects final visual position regardless of DOM direction.
+      var sign = dx >= 0 ? 1 : -1;
+      var angle = sign * 32;
+      var tx = Math.max(-46, Math.min(46, dx * 0.22));
+      var ty = dy < -4 ? -18 : (dy > 4 ? 10 : -6);
+
+      fromBottle.style.setProperty('--tilt-angle', angle + 'deg');
+      fromBottle.style.setProperty('--tilt-x', tx + 'px');
+      fromBottle.style.setProperty('--tilt-y', ty + 'px');
+      fromBottle.classList.add('pour-tilt');
+
+      // Fade/lift the poured-away segments out of the source immediately -
+      // they visibly leave the bottle as it tilts.
+      var fromSegs = fromBottle.querySelectorAll('.segment');
+      var fromStackLenBefore = fromSegs.length ? null : null; // (unused, kept for clarity)
+      var totalSegs = fromSegs.length;
+      for (var i = 0; i < moved; i++) {
+        var seg = fromSegs[totalSegs - 1 - i];
+        if (seg) seg.classList.add('pouring-out');
+      }
+
+      // Stream: a small fixed-position element carrying the actual poured
+      // color, travelling from the (now tilted) source mouth toward the
+      // destination mouth.
+      requestAnimationFrame(function () {
+        var startRect, endRect;
+        try {
+          startRect = fromBottle.getBoundingClientRect();
+          endRect = toBottle.getBoundingClientRect();
+        } catch (e) { cleanupAndFinish(); return; }
+        var sx = startRect.left + startRect.width * (sign >= 0 ? 0.8 : 0.2);
+        var sy = startRect.top + 4;
+        var ex = endRect.left + endRect.width / 2;
+        var ey = endRect.top + 8;
+        streamEl = document.createElement('div');
+        streamEl.className = 'pour-stream';
+        streamEl.style.background = color >= 0 ? colorForIndex(color) : '#fff';
+        streamEl.style.left = sx + 'px';
+        streamEl.style.top = sy + 'px';
+        streamEl.style.setProperty('--stream-dx', (ex - sx) + 'px');
+        streamEl.style.setProperty('--stream-dy', (ey - sy) + 'px');
+        document.body.appendChild(streamEl);
+
+        // Once the stream lands, grow the destination's new segments into
+        // place from zero height so the liquid level visibly rises.
+        setTimeout(function () {
+          if (finished) return;
+          var toLiquidWrap = toBottle.querySelector('.liquid-wrap');
+          if (toLiquidWrap) {
+            var existing = toLiquidWrap.querySelectorAll('.segment:not(.empty-seg)').length;
+            var emptySegs = toLiquidWrap.querySelectorAll('.segment.empty-seg');
+            for (var j = 0; j < moved && j < emptySegs.length; j++) {
+              // emptySegs is in DOM order (top of bottle first); the ones
+              // just above the current liquid fill first.
+              var fillSeg = emptySegs[emptySegs.length - 1 - j];
+              fillSeg.classList.remove('empty-seg');
+              fillSeg.style.background = colorForIndex(color);
+              fillSeg.classList.add('rising');
+              /* eslint-disable-next-line no-loop-func */
+              (function (s) {
+                requestAnimationFrame(function () {
+                  requestAnimationFrame(function () { s.classList.remove('rising'); });
+                });
+              })(fillSeg);
+            }
+          }
+        }, 170);
+
+        setTimeout(function () {
+          clearTimeout(safety);
+          cleanupAndFinish();
+        }, 320);
+      });
+    } catch (e) {
+      clearTimeout(safety);
+      cleanupAndFinish();
+    }
   }
 
   function onUndo() {
-    if (state.undosLeft <= 0 || state.history.length === 0) return;
+    if (state.animating || state.undosLeft <= 0 || state.history.length === 0) return;
     var prev = state.history.pop();
     state.bottles = prev.bottles;
     state.moves = prev.moves;
@@ -1060,7 +1239,7 @@
   }
 
   function onAddBottle() {
-    if (state.addsLeft <= 0) return;
+    if (state.animating || state.addsLeft <= 0) return;
     if (state.bottles.length >= 14) return;
     state.addsLeft--;
     pushHistory();
@@ -1069,7 +1248,7 @@
   }
 
   function onHint() {
-    if (state.hintsLeft <= 0) return;
+    if (state.animating || state.hintsLeft <= 0) return;
     var moves = global.WaterSort.legalMoves(state.bottles);
     // Prefer a move that empties a bottle or completes a color for better hints
     if (moves.length === 0) return;
@@ -1212,15 +1391,15 @@
   function init() {
     cacheDom();
     loadProgress();
-    el.undoBtn.addEventListener('click', onUndo);
-    el.restartBtn.addEventListener('click', onRestart);
-    el.addBtn.addEventListener('click', onAddBottle);
-    el.hintBtn.addEventListener('click', onHint);
-    el.muteBtn.addEventListener('click', onMuteToggle);
-    el.cbBtn.addEventListener('click', onColorblindToggle);
-    el.nextBtn.addEventListener('click', onNextLevel);
-    el.statsBtn.addEventListener('click', onStatsOpen);
-    el.statsCloseBtn.addEventListener('click', onStatsClose);
+    onFastTap(el.undoBtn, onUndo);
+    onFastTap(el.restartBtn, onRestart);
+    onFastTap(el.addBtn, onAddBottle);
+    onFastTap(el.hintBtn, onHint);
+    onFastTap(el.muteBtn, onMuteToggle);
+    onFastTap(el.cbBtn, onColorblindToggle);
+    onFastTap(el.nextBtn, onNextLevel);
+    onFastTap(el.statsBtn, onStatsOpen);
+    onFastTap(el.statsCloseBtn, onStatsClose);
     startLevel(state.level);
   }
 
