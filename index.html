@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>Water Sort Puzzle</title>
+<title>מיון בקבוקים</title>
 <link rel="manifest" href="manifest.json" />
 <link rel="icon" href="favicon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
@@ -14,56 +14,79 @@
 </head>
 <body>
   <header class="header">
-    <h1 class="title">Water&nbsp;Sort</h1>
-    <div class="stats">
-      <div class="stat"><span class="stat-label">Level</span><span id="stat-level" class="stat-value">1</span></div>
-      <div class="stat"><span class="stat-label">Score</span><span id="stat-score" class="stat-value">0</span></div>
-      <div class="stat"><span class="stat-label">Moves</span><span id="stat-moves" class="stat-value">0</span></div>
-      <div class="stat"><span class="stat-label">Best</span><span id="stat-best" class="stat-value">0</span></div>
+    <div class="header-top">
+      <h1 class="title">מיון בקבוקים</h1>
+      <div class="header-toggles">
+        <button id="btn-stats" class="icon-btn" title="סטטיסטיקות" aria-label="סטטיסטיקות">📊</button>
+        <button id="btn-mute" class="icon-btn" title="השתקה / ביטול השתקה" aria-label="השתקה" aria-pressed="false">🔊</button>
+        <button id="btn-colorblind" class="icon-btn" title="סמלים לעיוורי צבעים" aria-label="סמלים לעיוורי צבעים" aria-pressed="false">👁</button>
+        <button id="btn-install" class="icon-btn" title="התקן אפליקציה" aria-label="התקן אפליקציה" hidden>⬇</button>
+      </div>
     </div>
-    <div class="header-toggles">
-      <button id="btn-mute" class="icon-btn" title="Mute / unmute sound" aria-pressed="false">🔊</button>
-      <button id="btn-colorblind" class="icon-btn" title="Colorblind-friendly symbols" aria-pressed="false">👁</button>
-      <button id="btn-install" class="icon-btn" title="Install app" hidden>⬇</button>
+    <div class="stats">
+      <div class="stat stat-level">
+        <span class="stat-label">שלב</span>
+        <span id="stat-level" class="stat-value">1</span>
+        <div class="level-progress"><div id="level-progress-fill" class="level-progress-fill"></div></div>
+      </div>
+      <div class="stat"><span class="stat-label">ניקוד</span><span id="stat-score" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">מהלכים</span><span id="stat-moves" class="stat-value">0</span></div>
+      <div class="stat"><span class="stat-label">שיא</span><span id="stat-best" class="stat-value">0</span></div>
     </div>
   </header>
 
   <main class="main">
     <div id="stuck-banner" class="stuck-banner" hidden>
-      No moves left! Try <strong>Undo</strong> or <strong>Restart</strong>.
+      אין מהלכים אפשריים! נסו <strong>ביטול מהלך</strong> או <strong>התחלה מחדש</strong>.
     </div>
     <div id="board" class="board"></div>
   </main>
 
   <footer class="controls">
-    <button id="btn-undo" class="ctrl-btn">
-      <span class="ctrl-icon">↶</span>
-      <span class="ctrl-text">Undo</span>
+    <button id="btn-undo" class="ctrl-btn" aria-label="ביטול מהלך">
+      <span class="ctrl-icon">↷</span>
+      <span class="ctrl-text">ביטול מהלך</span>
       <span class="ctrl-count" id="undo-count">5</span>
     </button>
-    <button id="btn-restart" class="ctrl-btn">
+    <button id="btn-restart" class="ctrl-btn" aria-label="התחלה מחדש">
       <span class="ctrl-icon">⟲</span>
-      <span class="ctrl-text">Restart</span>
+      <span class="ctrl-text">התחלה מחדש</span>
     </button>
-    <button id="btn-add" class="ctrl-btn">
+    <button id="btn-add" class="ctrl-btn" aria-label="הוסף בקבוק">
       <span class="ctrl-icon">＋</span>
-      <span class="ctrl-text">Add Bottle</span>
+      <span class="ctrl-text">הוסף בקבוק</span>
       <span class="ctrl-count" id="add-count">2</span>
     </button>
-    <button id="btn-hint" class="ctrl-btn">
+    <button id="btn-hint" class="ctrl-btn" aria-label="רמז">
       <span class="ctrl-icon">💡</span>
-      <span class="ctrl-text">Hint</span>
+      <span class="ctrl-text">רמז</span>
       <span class="ctrl-count" id="hint-count">3</span>
     </button>
   </footer>
 
+  <div id="stats-overlay" class="stats-overlay" hidden>
+    <div class="stats-card">
+      <button id="btn-stats-close" class="overlay-close" aria-label="סגור">✕</button>
+      <h2>סטטיסטיקות</h2>
+      <div class="stats-grid">
+        <div class="stats-item"><span class="stats-num" id="s-levels">0</span><span class="stats-lbl">שלבים שהושלמו</span></div>
+        <div class="stats-item"><span class="stats-num" id="s-moves">0</span><span class="stats-lbl">סה"כ מהלכים</span></div>
+        <div class="stats-item"><span class="stats-num" id="s-hints">0</span><span class="stats-lbl">רמזים בשימוש</span></div>
+        <div class="stats-item"><span class="stats-num" id="s-undos">0</span><span class="stats-lbl">ביטולים בשימוש</span></div>
+        <div class="stats-item"><span class="stats-num" id="s-streak">0</span><span class="stats-lbl">רצף נוכחי</span></div>
+        <div class="stats-item"><span class="stats-num" id="s-best-streak">0</span><span class="stats-lbl">רצף שיא</span></div>
+      </div>
+    </div>
+  </div>
+
   <div id="win-overlay" class="win-overlay" hidden>
     <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
     <div class="win-card">
-      <h2>Level Complete!</h2>
+      <h2>כל הכבוד!</h2>
       <div id="win-stars" class="win-stars">★★★</div>
-      <div id="win-score" class="win-score">+100 points</div>
-      <button id="btn-next" class="ctrl-btn primary">Next Level →</button>
+      <div id="win-score" class="win-score">+100 נקודות</div>
+      <div id="win-total" class="win-total">סה"כ: 0</div>
+      <button id="btn-next" class="ctrl-btn primary">השלב הבא ←</button>
     </div>
   </div>
 

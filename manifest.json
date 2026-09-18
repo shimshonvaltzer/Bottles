@@ -1,13 +1,14 @@
 {
-  "name": "Water Sort Puzzle",
-  "short_name": "Bottles",
+  "name": "מיון בקבוקים",
+  "short_name": "בקבוקים",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0d1030",
   "theme_color": "#0d1030",
-  "lang": "en",
+  "dir": "rtl",
+  "lang": "he",
   "icons": [
     {
       "src": "icons/icon-192.png",

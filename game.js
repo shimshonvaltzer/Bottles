@@ -23,6 +23,23 @@
   var SYMBOLS = ['●', '▲', '■', '◆', '★', '✚', '◉', '▼', '✦', '◈', '✱', '▶'];
   var CAPACITY = 4;
 
+  // ---------- Hebrew UI strings (single source of truth for all user-facing text) ----------
+  var STR = {
+    bottleLabel: function (n) { return 'בקבוק ' + n; },
+    noMoves: 'אין מהלכים אפשריים! נסו',
+    undoWord: 'ביטול מהלך',
+    restartWord: 'התחלה מחדש',
+    winTitle: 'כל הכבוד!',
+    winPoints: function (n) { return '+' + n + ' נקודות'; },
+    winTotal: function (n) { return 'סה"כ: ' + n; },
+    statsLevels: 'שלבים שהושלמו',
+    statsMoves: 'סה"כ מהלכים',
+    statsHints: 'רמזים בשימוש',
+    statsUndos: 'ביטולים בשימוש',
+    statsStreak: 'רצף נוכחי',
+    statsBestStreak: 'רצף שיא'
+  };
+
   // ---------- Pure game logic ----------
 
   // Build a solved state for a given number of colors and bottles (colors + empties)
@@ -721,9 +738,33 @@
     el.winOverlay = document.getElementById('win-overlay');
     el.winStars = document.getElementById('win-stars');
     el.winScore = document.getElementById('win-score');
+    el.winTotal = document.getElementById('win-total');
     el.nextBtn = document.getElementById('btn-next');
     el.stuckBanner = document.getElementById('stuck-banner');
     el.confettiCanvas = document.getElementById('confetti-canvas');
+    el.levelProgressFill = document.getElementById('level-progress-fill');
+    el.statsBtn = document.getElementById('btn-stats');
+    el.statsOverlay = document.getElementById('stats-overlay');
+    el.statsCloseBtn = document.getElementById('btn-stats-close');
+    el.sLevels = document.getElementById('s-levels');
+    el.sMoves = document.getElementById('s-moves');
+    el.sHints = document.getElementById('s-hints');
+    el.sUndos = document.getElementById('s-undos');
+    el.sStreak = document.getElementById('s-streak');
+    el.sBestStreak = document.getElementById('s-best-streak');
+  }
+
+  function levelProgressPct() {
+    if (!state.bottles.length) return 0;
+    var complete = 0;
+    state.bottles.forEach(function (stack) {
+      if (stack.length === global.WaterSort.CAPACITY) {
+        var c = stack[0], ok = true;
+        for (var i = 1; i < stack.length; i++) { if (stack[i] !== c) { ok = false; break; } }
+        if (ok) complete++;
+      }
+    });
+    return Math.min(100, Math.round((complete / Math.max(1, state.numColors)) * 100));
   }
 
   function renderStats() {
@@ -741,6 +782,25 @@
     el.muteBtn.setAttribute('aria-pressed', String(state.muted));
     el.cbBtn.setAttribute('aria-pressed', String(state.colorblind));
     el.cbBtn.classList.toggle('active', state.colorblind);
+    if (el.levelProgressFill) el.levelProgressFill.style.width = levelProgressPct() + '%';
+  }
+
+  function renderStatsPanel() {
+    var s = state.stats;
+    el.sLevels.textContent = s.levelsCompleted;
+    el.sMoves.textContent = s.totalMoves;
+    el.sHints.textContent = s.totalHints;
+    el.sUndos.textContent = s.totalUndos;
+    el.sStreak.textContent = s.currentStreak;
+    el.sBestStreak.textContent = s.longestStreak;
+  }
+
+  function onStatsOpen() {
+    renderStatsPanel();
+    el.statsOverlay.hidden = false;
+  }
+  function onStatsClose() {
+    el.statsOverlay.hidden = true;
   }
 
   function render() {
@@ -762,7 +822,7 @@
     bottle.dataset.index = String(idx);
     bottle.setAttribute('role', 'button');
     bottle.setAttribute('tabindex', '0');
-    bottle.setAttribute('aria-label', 'Bottle ' + (idx + 1));
+    bottle.setAttribute('aria-label', STR.bottleLabel(idx + 1));
 
     var liquidWrap = document.createElement('div');
     liquidWrap.className = 'liquid-wrap';
@@ -967,8 +1027,15 @@
   function showWinOverlay(levelScore) {
     var stars = 1;
     if (state.moves <= 15) stars = 3; else if (state.moves <= 25) stars = 2;
-    el.winStars.textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
-    el.winScore.textContent = '+' + levelScore + ' points';
+    el.winStars.innerHTML = '';
+    for (var i = 0; i < 3; i++) {
+      var s = document.createElement('span');
+      s.className = 'star';
+      s.textContent = i < stars ? '★' : '☆';
+      el.winStars.appendChild(s);
+    }
+    el.winScore.textContent = STR.winPoints(levelScore);
+    el.winTotal.textContent = STR.winTotal(state.score);
     el.winOverlay.hidden = false;
     el.winOverlay.classList.add('show');
   }
@@ -1049,6 +1116,8 @@
     el.muteBtn.addEventListener('click', onMuteToggle);
     el.cbBtn.addEventListener('click', onColorblindToggle);
     el.nextBtn.addEventListener('click', onNextLevel);
+    el.statsBtn.addEventListener('click', onStatsOpen);
+    el.statsCloseBtn.addEventListener('click', onStatsClose);
     startLevel(state.level);
   }
 
@@ -1059,6 +1128,6 @@
   }
 
   // expose a few things for debugging/testing in-browser
-  global.WaterSortApp = { state: state, startLevel: startLevel };
+  global.WaterSortApp = { state: state, startLevel: startLevel, onWin: onWin };
 
 })(typeof globalThis !== 'undefined' ? globalThis : this);
