@@ -97,6 +97,8 @@
     lockNote: function (need, have) {
       return 'בקבוקים נעולים ייפתחו כשיהיו ' + need + ' בקבוקים בצבע אחד (' + Math.min(have, need) + '/' + need + ')';
     },
+    lockNoteText: function (need) { return 'נפתח עם ' + need + ' בקבוקים בצבע אחד'; },
+    lockNoteOpen: 'הבקבוקים נפתחו!',
     noMoves: 'אין מהלכים אפשריים! נסו',
     undoWord: 'ביטול מהלך',
     restartWord: 'התחלה מחדש',
@@ -1090,6 +1092,7 @@
     state.capacity = gen.capacity;
     state.locks = gen.locks || null; // mirrors WaterSort's LOCKS, which generateLevel just set
     state.lockedPrev = null;
+    state.enterNext = true;
     state.selected = -1;
     state.animating = false;
     state.moves = 0;
@@ -1163,7 +1166,6 @@
     el.undoBtn.disabled = state.undosLeft <= 0 || state.history.length === 0;
     el.addBtn.disabled = state.addsLeft <= 0;
     el.hintBtn.disabled = state.hintsLeft <= 0;
-    el.muteBtn.textContent = state.muted ? '🔇' : '🔊';
     el.muteBtn.setAttribute('aria-pressed', String(state.muted));
     el.cbBtn.setAttribute('aria-pressed', String(state.colorblind));
     el.cbBtn.classList.toggle('active', state.colorblind);
@@ -1206,6 +1208,31 @@
     state.lockedPrev = lockedNow;
     renderLockNote();
     checkStuck();
+    if (state.enterNext) { el.board.classList.add('enter'); state.enterNext = false; }
+    fitBoard();
+  }
+
+  // Size the bottles to the space the flex layout left for the board, so the
+  // header, board and control bar always fit the viewport (no scrolling).
+  function fitBoard() {
+    var b = el.board;
+    if (!b || !state.bottles.length) return;
+    var mainEl = b.parentNode, cs = window.getComputedStyle(mainEl);
+    var W = mainEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), H = b.clientHeight;
+    if (!W || !H) return;
+    var n = state.bottles.length, rows = Math.ceil(n / 5);
+    var gx = W < 340 ? 6 : 8, gy = rows > 2 ? 6 : (rows === 2 ? 12 : 10), lift = 10;
+    var bhAvail = Math.floor((H - (rows - 1) * gy) / rows - lift);
+    var bw = Math.floor(Math.min(80, (W - 4 * gx) / 5, bhAvail / 2.5));
+    var bh = Math.floor(Math.min(bhAvail, bw * (rows === 1 ? 3.4 : 3.1)));
+    if (bw < 20 || bh < 40) return;
+    var s = b.style;
+    s.setProperty('--bw', bw + 'px');
+    s.setProperty('--bh', bh + 'px');
+    s.setProperty('--bd', (bw < 46 ? 2 : 3) + 'px');
+    s.setProperty('--gx', gx + 'px');
+    s.setProperty('--gy', gy + 'px');
+    s.setProperty('--lift', lift + 'px');
   }
 
   function renderLockNote() {
@@ -1214,8 +1241,23 @@
     if (!state.locks) { el.lockNote.hidden = true; return; }
     var have = global.WaterSort.solidCount(state.bottles);
     el.lockNote.hidden = false;
-    el.lockNote.textContent = STR.lockNote(state.locks.need, have);
+    var shown = Math.min(have, state.locks.need);
+    var open = have >= state.locks.need;
+    el.lockNote.setAttribute('aria-label', STR.lockNote(state.locks.need, have));
+    el.lockNote.innerHTML =
+      '<svg class="ico ln-ico" viewBox="0 0 24 24" aria-hidden="true">' +
+      (open ? '<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 7.5-1.9"/>'
+            : '<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>') + '</svg>' +
+      '<span class="ln-text">' + (open ? STR.lockNoteOpen : STR.lockNoteText(state.locks.need)) + '</span>' +
+      '<span class="ln-meter" aria-hidden="true"><span class="ln-fill" style="width:' + Math.round(shown / state.locks.need * 100) + '%"></span></span>' +
+      '<span class="ln-count">' + shown + '/' + state.locks.need + '</span>';
     el.lockNote.classList.toggle('open', have >= state.locks.need);
+  }
+
+  function isComplete(stack) {
+    if (stack.length !== state.capacity) return false;
+    for (var i = 1; i < stack.length; i++) { if (stack[i] !== stack[0]) return false; }
+    return true;
   }
 
   function buildBottleEl(stack, idx, locked) {
@@ -1224,6 +1266,7 @@
     var bottle = document.createElement('div');
     bottle.className = 'bottle';
     if (idx === state.selected) bottle.classList.add('selected');
+    if (isComplete(stack)) bottle.classList.add('complete');
     bottle.dataset.index = String(idx);
     bottle.setAttribute('role', 'button');
     bottle.setAttribute('tabindex', '0');
@@ -1382,6 +1425,13 @@
       requestAnimationFrame(function () { sounds.pour(); });
       animatePourTransition(fromIdx, idx, movedColor, result.moved, function () {
         render();
+        if (isComplete(state.bottles[idx])) {
+          var doneB = el.board.children[idx] && el.board.children[idx].querySelector('.bottle');
+          if (doneB) {
+            doneB.classList.add('complete-pop');
+            setTimeout(function () { doneB.classList.remove('complete-pop'); }, 320);
+          }
+        }
         if (ws.isSolved(state.bottles)) {
           setTimeout(onWin, 350);
         }
@@ -1630,8 +1680,8 @@
     el.winStars.innerHTML = '';
     for (var i = 0; i < 3; i++) {
       var s = document.createElement('span');
-      s.className = 'star';
-      s.textContent = i < stars ? '★' : '☆';
+      s.className = i < stars ? 'star' : 'star off';
+      s.textContent = '★';
       el.winStars.appendChild(s);
     }
     el.winScore.textContent = STR.winPoints(levelScore);
@@ -1709,6 +1759,10 @@
   function init() {
     cacheDom();
     loadProgress();
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(function () { fitBoard(); }).observe(el.board);
+    }
+    window.addEventListener('resize', fitBoard);
     onFastTap(el.undoBtn, onUndo);
     onFastTap(el.restartBtn, onRestart);
     onFastTap(el.addBtn, onAddBottle);
