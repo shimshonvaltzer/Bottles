@@ -250,6 +250,52 @@ body {
   filter: drop-shadow(0 10px 18px rgba(34, 211, 238, 0.35));
 }
 
+/* ---------- Locked bottles ---------- */
+.lock-note {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #ffe9a8;
+  padding: 3px var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  text-align: center;
+}
+.lock-note.open { background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.55); color: #c6f6df; }
+.bottle.locked .liquid-wrap { border-color: #fbbf24; }
+.bottle.locked .segment { filter: saturate(0.55) brightness(0.7); }
+.bottle.locked { cursor: not-allowed; }
+.lock-badge {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  color: #fbbf24;
+  background: rgba(16, 18, 32, 0.88);
+  border: 1.5px solid #fbbf24;
+  border-radius: 10px;
+  padding: 3px 5px 2px;
+  pointer-events: none;
+  line-height: 1;
+}
+.lock-badge svg { width: 18px; height: 18px; display: block; }
+.lock-need { font-size: 0.85rem; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; }
+.bottle.just-unlocked { animation: unlockFlash 0.9s ease; }
+@keyframes unlockFlash {
+  0% { filter: drop-shadow(0 0 0 rgba(251,191,36,0)); }
+  30% { filter: drop-shadow(0 0 18px rgba(251,191,36,0.95)); }
+  100% { filter: drop-shadow(0 6px 16px rgba(0,0,0,0.55)); }
+}
+
+/* the note costs one line of height; take it back from the row gaps so the
+   controls stay on screen on a 390x844 phone with 14 bottles */
+.has-locks .board { row-gap: 4px; }
+
 /* Pour: source bottle tilts + shifts toward the destination. The angle and
    offsets are computed per-pour in JS (real screen coordinates), so this is
    correct for RTL and for destinations on another row. */

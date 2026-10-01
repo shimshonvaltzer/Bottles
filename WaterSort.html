@@ -262,6 +262,52 @@ body {
   filter: drop-shadow(0 10px 18px rgba(34, 211, 238, 0.35));
 }
 
+/* ---------- Locked bottles ---------- */
+.lock-note {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #ffe9a8;
+  padding: 3px var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  text-align: center;
+}
+.lock-note.open { background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.55); color: #c6f6df; }
+.bottle.locked .liquid-wrap { border-color: #fbbf24; }
+.bottle.locked .segment { filter: saturate(0.55) brightness(0.7); }
+.bottle.locked { cursor: not-allowed; }
+.lock-badge {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  color: #fbbf24;
+  background: rgba(16, 18, 32, 0.88);
+  border: 1.5px solid #fbbf24;
+  border-radius: 10px;
+  padding: 3px 5px 2px;
+  pointer-events: none;
+  line-height: 1;
+}
+.lock-badge svg { width: 18px; height: 18px; display: block; }
+.lock-need { font-size: 0.85rem; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; }
+.bottle.just-unlocked { animation: unlockFlash 0.9s ease; }
+@keyframes unlockFlash {
+  0% { filter: drop-shadow(0 0 0 rgba(251,191,36,0)); }
+  30% { filter: drop-shadow(0 0 18px rgba(251,191,36,0.95)); }
+  100% { filter: drop-shadow(0 6px 16px rgba(0,0,0,0.55)); }
+}
+
+/* the note costs one line of height; take it back from the row gaps so the
+   controls stay on screen on a 390x844 phone with 14 bottles */
+.has-locks .board { row-gap: 4px; }
+
 /* Pour: source bottle tilts + shifts toward the destination. The angle and
    offsets are computed per-pour in JS (real screen coordinates), so this is
    correct for RTL and for destinations on another row. */
@@ -725,6 +771,7 @@ body {
     <div id="stuck-banner" class="stuck-banner" hidden>
       אין מהלכים אפשריים! נסו <strong>ביטול מהלך</strong> או <strong>התחלה מחדש</strong>.
     </div>
+    <div id="lock-note" class="lock-note" hidden></div>
     <div id="board" class="board"></div>
   </main>
 
@@ -817,23 +864,41 @@ body {
     CAPACITY = n;
     if (global.WaterSort) global.WaterSort.CAPACITY = n;
   }
-  // Bottle capacity ramps up in steps as level rises. Below the first
-  // threshold, capacity-4 boards searched hard (see generateLevel) reach
-  // the low-to-mid twenties in optimal moves; measurement showed that
-  // ceiling does not move with level or with scramble strength beyond that
-  // point (board information capacity, not scramble weakness, is what
-  // plateaus - see minSolverMoves comment: 12 colors is the palette's cap
-  // and bottle count is capped at 14, so the only remaining lever is more
-  // liquid per bottle). Each step measured to raise the achievable optimal
-  // length by a few moves (scratchpad/tune_caps.js): ~24 at capacity 4,
-  // ~25-28 at 5, ~26-30 at 6, ~28-32 at 7.
+  // ---------- Difficulty curve ----------
+  // ONE smooth, strictly increasing target drives every level:
+  //   targetMoves(L) = 7 + 17*(1 - e^(-L/25)) + 0.21*L
+  // (L1 ~8, L20 ~20, L50 ~31, L100 ~45, L161 ~58, L200 ~66, L300 ~87.) The
+  // exponential term is a fast early climb; the linear term never stops, so
+  // the curve is still rising at L300 and beyond (slope >= 0.21/level).
+  // The measured quantity it controls is the run-count lower bound on the
+  // optimal solve length (see lowerBound), which was measured to sit within
+  // ~3-4 moves of the exact optimum on boards small enough to solve exactly.
+  // Every other knob only exists to give that target room to be reached:
+  //   colors   3 -> 12 (palette cap) by level 19
+  //   empties  2 (a random deal with a single free bottle is almost never
+  //            solvable, so 2 is the minimum that keeps levels solvable)
+  //   bottles  colors + empties (<= 14)
+  //   capacity 4 -> 8 by level 75 (the original ramp); a board of
+  //            12 colours x 8 units can be mixed up to a lower bound of 84,
+  //            enough headroom for the curve up to ~level 330. Only past
+  //            that does capacity grow again (9, then 10) so the curve keeps
+  //            climbing instead of saturating.
+  //   locks    from level 50, bottles that open after N bottles are
+  //            complete (see LOCKS). Measured: locks do not change the
+  //            optimal length, they take slack away from the player.
   var CAPACITY_RAMP = [
     { level: 0, capacity: 4 },
     { level: 20, capacity: 5 },
     { level: 40, capacity: 6 },
     { level: 60, capacity: 7 },
-    { level: 75, capacity: 8 }
+    { level: 75, capacity: 8 },
+    { level: 330, capacity: 9 },
+    { level: 450, capacity: 10 }
   ];
+  function targetMoves(level) {
+    level = Math.max(1, level);
+    return 7 + 17 * (1 - Math.exp(-level / 25)) + 0.21 * level;
+  }
   function computeCapacity(level) {
     var cap = CAPACITY_RAMP[0].capacity;
     for (var i = 0; i < CAPACITY_RAMP.length; i++) {
@@ -841,10 +906,23 @@ body {
     }
     return cap;
   }
+  // Lock schedule: none at low levels, then more locked bottles and a
+  // higher unlock requirement as the level rises.
+  function computeLockPlan(level) {
+    if (level < 50) return { count: 0, need: 0 };
+    return {
+      count: Math.min(1 + Math.floor((level - 50) / 60), 4),
+      need: Math.min(2 + Math.floor((level - 50) / 40), 6)
+    };
+  }
 
   // ---------- Hebrew UI strings (single source of truth for all user-facing text) ----------
   var STR = {
     bottleLabel: function (n) { return 'בקבוק ' + n; },
+    lockedLabel: function (n) { return 'בקבוק ' + n + ' נעול'; },
+    lockNote: function (need, have) {
+      return 'בקבוקים נעולים ייפתחו כשיהיו ' + need + ' בקבוקים בצבע אחד (' + Math.min(have, need) + '/' + need + ')';
+    },
     noMoves: 'אין מהלכים אפשריים! נסו',
     undoWord: 'ביטול מהלך',
     restartWord: 'התחלה מחדש',
@@ -873,21 +951,55 @@ body {
     return bottles;
   }
 
+  // ---------- Locked bottles ----------
+  // Rule (identical for the player and for the generator's solver): a locked
+  // bottle can neither be poured out of nor into until at least `need`
+  // bottles on the board hold a SINGLE colour (non-empty, one colour,
+  // however full). The rule is
+  // a pure function of the board - no hidden "unlocked" flag - so Undo,
+  // Restart, Add Bottle, Hint and stuck-detection all stay consistent for
+  // free. LOCKS is module-level data like CAPACITY (set per level by
+  // generateLevel via setLocks); null = no locks.
+  var LOCKS = null; // { idx: [bottle indices], need: N }
+  function setLocks(idxList, need) {
+    LOCKS = (idxList && idxList.length && need > 0) ? { idx: idxList.slice(), need: need } : null;
+    if (global.WaterSort) global.WaterSort.LOCKS = LOCKS;
+  }
+  function solidCount(bottles) {
+    var n = 0;
+    for (var i = 0; i < bottles.length; i++) {
+      var s = bottles[i];
+      if (s.length === 0) continue;
+      var ok = true;
+      for (var j = 1; j < s.length; j++) if (s[j] !== s[0]) { ok = false; break; }
+      if (ok) n++;
+    }
+    return n;
+  }
+  function locksActive(bottles) {
+    return !!LOCKS && solidCount(bottles) < LOCKS.need;
+  }
+  function isLocked(bottles, idx) {
+    return locksActive(bottles) && LOCKS.idx.indexOf(idx) !== -1;
+  }
+
   // Returns list of legal "forward" moves [from, to] for a given state
   function legalMoves(bottles) {
     var moves = [];
+    var lockOn = locksActive(bottles);
     for (var from = 0; from < bottles.length; from++) {
       if (bottles[from].length === 0) continue;
-      var topColor = bottles[from][bottles[from].length - 1];
+      if (lockOn && LOCKS.idx.indexOf(from) !== -1) continue;
       for (var to = 0; to < bottles.length; to++) {
         if (to === from) continue;
-        if (canPour(bottles, from, to)) moves.push([from, to]);
+        if (lockOn && LOCKS.idx.indexOf(to) !== -1) continue;
+        if (canPourBasic(bottles, from, to)) moves.push([from, to]);
       }
     }
     return moves;
   }
 
-  function canPour(bottles, from, to) {
+  function canPourBasic(bottles, from, to) {
     var src = bottles[from], dst = bottles[to];
     if (src.length === 0) return false;
     if (dst.length >= CAPACITY) return false;
@@ -895,6 +1007,12 @@ body {
     if (dst.length === 0) return true;
     var dstTop = dst[dst.length - 1];
     return dstTop === topColor;
+  }
+
+  function canPour(bottles, from, to) {
+    if (from === to) return false;
+    if (LOCKS && (isLocked(bottles, from) || isLocked(bottles, to))) return false;
+    return canPourBasic(bottles, from, to);
   }
 
   // Perform a pour, returns { moved, newBottles } - does not mutate input
@@ -977,7 +1095,7 @@ body {
   }
 
   function computeNumEmpty(level, numColors) {
-    var empties = level <= 10 ? 2 : 1;
+    var empties = 2;
     if (numColors + empties > 14) empties = Math.max(1, 14 - numColors);
     return empties;
   }
@@ -1104,7 +1222,7 @@ body {
   // getReverseMoves), just possibly expensive to solve optimally.
   function solverLength(bottles, maxStates) {
     maxStates = maxStates || 20000;
-    var startKey = stateKey(bottles);
+    var startKey = lockedStateKey(bottles);
     var visited = new Set([startKey]);
     var queue = [{ b: bottles, d: 0 }];
     var head = 0;
@@ -1117,7 +1235,7 @@ body {
       var moves = legalMoves(cur.b);
       for (var i = 0; i < moves.length; i++) {
         var res = pour(cur.b, moves[i][0], moves[i][1]);
-        var key = stateKey(res.bottles);
+        var key = lockedStateKey(res.bottles);
         if (!visited.has(key)) {
           visited.add(key);
           queue.push({ b: res.bottles, d: cur.d + 1 });
@@ -1127,129 +1245,315 @@ body {
     return null; // exhausted search space without reaching solved (shouldn't happen)
   }
 
-  // Minimum acceptable OPTIMAL (or budget-exceeded-so-presumed-hard)
-  // solution length for a level. Measurement (see scratchpad verification
-  // scripts) showed that with capacity 4, best-of-N search over random
-  // reverse-pour scrambles plateaus around the low-to-mid twenties
-  // regardless of level or scramble strength - that is the board's
-  // information capacity (12 colors x 4 units, <=14 bottles), not a weak
-  // scramble. The floor therefore climbs smoothly through that range for
-  // capacity-4 levels, and continues climbing past it once capacity ramps
-  // to 5 (see computeCapacity / CAPACITY_RAMP_LEVEL), which raises the
-  // achievable ceiling further.
-  function minSolverMoves(level, numColors) {
-    // Hard floor of 7 regardless of level/color count - see HARD
-    // CONSTRAINTS in the generation spec ("never under 7 moves"), which
-    // matters most at very low levels/small color counts.
-    var target;
-    if (level < 30) {
-      target = 6 + Math.floor(level * 0.9); // climbs toward ~24 at capacity 4
-    } else {
-      // Past the capacity ramp start: keep climbing more slowly, matched to
-      // what each capacity step was measured to achieve (see
-      // scratchpad/tune_caps.js: ~24@cap4, ~25-28@cap5, ~26-30@cap6,
-      // ~28-32@cap7). This is a soft target used to decide when the
-      // candidate search can stop early (generateLevel always keeps the
-      // best board found either way), so it is fine if actual boards land
-      // a little below it.
-      target = 24 + Math.floor((level - 30) * 0.3);
-    }
-    return Math.max(7, Math.min(target, 40));
+  // ---------- Run-count lower bound + weighted A* solver ----------
+  // totalRuns = number of maximal same-colour runs over all bottles. A solved
+  // board has exactly numColors runs, and a single pour can lower the total
+  // by at most one (it either merges a whole run into an equal-coloured run,
+  // or only moves part of a run / moves a run onto an empty bottle, which
+  // leave the total unchanged). So (totalRuns - numColors) is a PROVABLE
+  // lower bound on the optimal solution length, cheap enough to evaluate on
+  // every candidate at any board size, and it is also an admissible A*
+  // heuristic.
+  function totalRuns(bottles) {
+    var r = 0;
+    for (var i = 0; i < bottles.length; i++) r += countRuns(bottles[i]);
+    return r;
+  }
+  function lowerBound(bottles, numColors) {
+    return totalRuns(bottles) - numColors;
   }
 
-  // Reverse-pour based generator: start solved, undo biased reverse pours,
-  // then SEARCH for a hard board rather than accepting the first one that
-  // clears a bar. A single scramble attempt does not reliably find a hard
-  // board (variance is high - see measurement scripts), and running the
-  // exact BFS solver on every candidate is too slow to search widely
-  // (measured ~100-500ms per capacity-5 board at a useful node budget).
-  //
-  // So generation runs in two cheap-then-precise phases:
-  //   1) Generate a LARGE number of candidates (scramble + boardDifficulty
-  //      only - no BFS, ~0.3-1ms each even at capacity 5) and keep the one
-  //      with the highest fragmentation among structurally-valid boards.
-  //      Fragmentation is a fast, well-correlated proxy for optimal solver
-  //      length (verified empirically: rank-correlation is strong across
-  //      both capacities - see scratchpad/corr_test.js), so "most
-  //      fragmented of N" reliably approximates "hardest of N" without ever
-  //      running the expensive solver N times.
-  //   2) Run the real (bounded) BFS solver ONCE on that winning candidate,
-  //      to (a) get the precise/measured optimal length used for the
-  //      minSolverMoves bar and for reporting, and (b) as a fallback: if it
-  //      somehow falls short of the bar, retry with the next-best
-  //      candidates (by fragmentation) a few times, bounded by the overall
-  //      wall-clock budget.
-  var GEN_TIME_BUDGET_MS = 110; // soft wall-clock budget; leaves headroom under the ~500ms hard cap
+  // Weighted A* over canonical states, f = g + weight * lowerBound.
+  // weight 1 = exact optimum (admissible heuristic); weight > 1 trades
+  // optimality for speed and returns a VALID solution length (an upper bound
+  // on the optimum) - which also certifies solvability. Returns
+  // { len: moves | null, nodes, path: [[from,to],...] } ; null = budget
+  // exhausted or dead end. Honours the CURRENT lock rule (see LOCKS).
+  function searchSolution(bottles, numColors, weight, maxNodes) {
+    var heap = [];
+    function hpush(n) {
+      heap.push(n);
+      var i = heap.length - 1;
+      while (i > 0) {
+        var p = (i - 1) >> 1;
+        if (heap[p].f <= heap[i].f) break;
+        var t = heap[p]; heap[p] = heap[i]; heap[i] = t; i = p;
+      }
+    }
+    function hpop() {
+      var top = heap[0], last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        var i = 0;
+        for (;;) {
+          var l = 2 * i + 1, r = l + 1, m = i;
+          if (l < heap.length && heap[l].f < heap[m].f) m = l;
+          if (r < heap.length && heap[r].f < heap[m].f) m = r;
+          if (m === i) break;
+          var t = heap[m]; heap[m] = heap[i]; heap[i] = t; i = m;
+        }
+      }
+      return top;
+    }
+    var n0 = bottles.length;
+    var isLockIdx = [];
+    for (var li = 0; li < n0; li++) isLockIdx.push(!!LOCKS && LOCKS.idx.indexOf(li) !== -1);
+    function bstr(st) {
+      var out = '';
+      for (var q = 0; q < st.length; q++) out += String.fromCharCode(65 + st[q]);
+      return out;
+    }
+    // Canonical key from per-bottle strings: interchangeable bottles are
+    // sorted, bottles designated as lockable keep their position.
+    function keyOf(ks) {
+      if (!LOCKS) return ks.slice().sort().join('|');
+      var free = [], fixed = '';
+      for (var q = 0; q < ks.length; q++) { if (isLockIdx[q]) fixed += ks[q] + '|'; else free.push(ks[q]); }
+      return free.sort().join('|') + '#' + fixed;
+    }
+    var seen = new Map();
+    var ks0 = [];
+    for (var z = 0; z < n0; z++) ks0.push(bstr(bottles[z]));
+    seen.set(keyOf(ks0), 0);
+    var runs0 = totalRuns(bottles);
+    hpush({ b: bottles, ks: ks0, runs: runs0, g: 0, p: null, mv: null, f: weight * (runs0 - numColors) });
+    var nodes = 0;
+    while (heap.length) {
+      var cur = hpop();
+      if (++nodes > maxNodes) return { len: null, nodes: nodes };
+      var B = cur.b, n = B.length;
+      if (cur.runs === numColors && isSolved(B)) {
+        var path = [];
+        for (var c = cur; c.p; c = c.p) path.push(c.mv);
+        path.reverse();
+        return { len: cur.g, nodes: nodes, path: path };
+      }
+      var lockOn = locksActive(B);
+      for (var a = 0; a < n; a++) {
+        var sa = B[a];
+        if (sa.length === 0) continue;
+        if (lockOn && isLockIdx[a]) continue;
+        var top = sa[sa.length - 1];
+        var run = 0;
+        for (var i = sa.length - 1; i >= 0 && sa[i] === top; i--) run++;
+        var emptyTried = false;
+        for (var d = 0; d < n; d++) {
+          if (d === a) continue;
+          if (lockOn && isLockIdx[d]) continue;
+          var sd = B[d];
+          if (sd.length >= CAPACITY) continue;
+          if (sd.length === 0) {
+            // moving a whole single-colour bottle into an empty one is pointless;
+            // and all empty bottles are interchangeable
+            if (run === sa.length || emptyTried) continue;
+            if (!isLockIdx[d]) emptyTried = true;
+          } else if (sd[sd.length - 1] !== top) continue;
+          var src = sa.slice(), dst = sd.slice();
+          while (src.length && src[src.length - 1] === top && dst.length < CAPACITY) dst.push(src.pop());
+          var nb = B.slice();
+          nb[a] = src; nb[d] = dst;
+          var nks = cur.ks.slice();
+          nks[a] = bstr(src); nks[d] = bstr(dst);
+          var key = keyOf(nks);
+          var g = cur.g + 1;
+          var og = seen.get(key);
+          if (og !== undefined && og <= g) continue;
+          seen.set(key, g);
+          var nruns = cur.runs - countRuns(sa) - countRuns(sd) + countRuns(src) + countRuns(dst);
+          hpush({ b: nb, ks: nks, runs: nruns, g: g, p: cur, mv: [a, d], f: g + weight * (nruns - numColors) });
+        }
+      }
+    }
+    return { len: null, nodes: nodes };
+  }
 
-  function generateLevel(level) {
+  // Minimum acceptable optimal solve length for a level: the smooth
+  // targetMoves curve (floored at the hard minimum of 7). Strictly
+  // increasing in level; numColors is accepted for API compatibility.
+  function minSolverMoves(level, numColors) {
+    return Math.max(7, Math.floor(targetMoves(level)));
+  }
+
+  // ---------- Hill-climbing deal ----------
+  // Start from the solved board and swap random units between bottles,
+  // keeping a swap when it does not reduce the run count (and, rarely, when
+  // it does, for variety), until the lower bound reaches fragTarget. Unlike
+  // a reverse-pour scramble this reaches (nearly) maximal mixing at any
+  // capacity, and the lower bound lands right at the requested bar, so the
+  // bar - not luck - decides difficulty. Solvability is NOT automatic here;
+  // generateLevel certifies every board with the solver.
+  function dealBoard(numColors, numEmpty, cap, fragTarget, rng) {
+    var bottles = buildSolvedState(numColors, numEmpty);
+    var n = numColors * cap;
+    var frag = 0; // runs above the solved count
+    var maxIter = n * 80;
+    for (var it = 0; it < maxIter; it++) {
+      var p = Math.floor(rng() * n), q = Math.floor(rng() * n);
+      // Phase 1: break up every bottle that is still a solid colour by
+      // pulling one of its units into another bottle (accepted whatever it
+      // does to the run count). Phase 2: hill-climb on the run count.
+      var solid = [];
+      for (var sb0 = 0; sb0 < numColors; sb0++) {
+        var st0 = bottles[sb0];
+        if (st0.length === cap && countRuns(st0) === 1) solid.push(sb0);
+      }
+      var forced = solid.length > 0;
+      if (forced) p = solid[Math.floor(rng() * solid.length)] * cap + Math.floor(rng() * cap);
+      else if (frag >= fragTarget) break;
+      var a = Math.floor(p / cap), b = Math.floor(q / cap);
+      if (a === b) continue;
+      var sa = bottles[a], sb = bottles[b];
+      var pi = p % cap, qi = q % cap;
+      if (sa[pi] === sb[qi]) continue;
+      var before = countRuns(sa) + countRuns(sb);
+      var t = sa[pi]; sa[pi] = sb[qi]; sb[qi] = t;
+      var delta = countRuns(sa) + countRuns(sb) - before;
+      if (!forced && delta < 0 && rng() > 0.08) { t = sa[pi]; sa[pi] = sb[qi]; sb[qi] = t; continue; }
+      frag += delta;
+    }
+    // Descent: the climb (and the solid-bottle breaking) can overshoot the
+    // bar; walk back down so the board lands ON the bar, never on a
+    // random amount above it. This is what makes difficulty a function of
+    // the level rather than of luck.
+    for (var d = 0; d < n * 40 && frag > fragTarget; d++) {
+      var p2 = Math.floor(rng() * n), q2 = Math.floor(rng() * n);
+      var a2 = Math.floor(p2 / cap), b2 = Math.floor(q2 / cap);
+      if (a2 === b2) continue;
+      var xa = bottles[a2], xb = bottles[b2], pi2 = p2 % cap, qi2 = q2 % cap;
+      if (xa[pi2] === xb[qi2]) continue;
+      var before2 = countRuns(xa) + countRuns(xb);
+      var t2 = xa[pi2]; xa[pi2] = xb[qi2]; xb[qi2] = t2;
+      var delta2 = countRuns(xa) + countRuns(xb) - before2;
+      if (delta2 < 0 && frag + delta2 >= fragTarget && countRuns(xa) > 1 && countRuns(xb) > 1) {
+        frag += delta2;
+      } else {
+        t2 = xa[pi2]; xa[pi2] = xb[qi2]; xb[qi2] = t2;
+      }
+    }
+    return bottles;
+  }
+
+  // Replay a move list under the CURRENT lock rule using the game's own
+  // canPour/pour. True only if every move is legal and the end is solved.
+  function replaySolves(bottles, path) {
+    var cur = bottles;
+    for (var i = 0; i < path.length; i++) {
+      if (!canPour(cur, path[i][0], path[i][1])) return false;
+      cur = pour(cur, path[i][0], path[i][1]).bottles;
+    }
+    return isSolved(cur);
+  }
+
+  // Choose locked bottles for a certified-solvable board. Constructive, so
+  // solvability under the lock is guaranteed rather than hoped for: take the
+  // solver's solution, find the first move index t after which `need`
+  // bottles are complete, and only lock bottles that the solution does not
+  // touch during moves 1..t. The same solution then stays legal under the
+  // lock rule. Every plan is re-verified by replay with the game's real
+  // canPour (setLocks + replaySolves); falls back to fewer locks / a lower
+  // requirement, ending at no locks, so a level never becomes unsolvable.
+  function planLocks(bottles, path, plan) {
+    // First move index at which each bottle takes part, and the number of
+    // complete bottles after every prefix of the solution.
+    var firstTouch = [], counts = [solidCount(bottles)], cur = bottles, i, b;
+    for (b = 0; b < bottles.length; b++) firstTouch.push(Infinity);
+    for (i = 0; i < path.length; i++) {
+      if (firstTouch[path[i][0]] === Infinity) firstTouch[path[i][0]] = i;
+      if (firstTouch[path[i][1]] === Infinity) firstTouch[path[i][1]] = i;
+      cur = pour(cur, path[i][0], path[i][1]).bottles;
+      counts.push(solidCount(cur));
+    }
+    // Candidates: non-empty bottles, those the solution needs LATEST first.
+    var cands = [];
+    for (b = 0; b < bottles.length; b++) {
+      if (bottles[b].length > 0) cands.push({ i: b, t: firstTouch[b], runs: countRuns(bottles[b]) });
+    }
+    cands.sort(function (x, y) { return y.t - x.t || y.runs - x.runs || x.i - y.i; });
+    var bestPlan = null, bestStrength = 0;
+    for (var k = plan.count; k >= 1; k--) {
+      var chosen = cands.slice(0, k);
+      var tStar = chosen[chosen.length - 1].t; // moves 0..tStar-1 avoid every chosen bottle
+      var maxNeed = 0;
+      for (i = 0; i <= Math.min(tStar, path.length); i++) if (counts[i] > maxNeed) maxNeed = counts[i];
+      var need = Math.min(plan.need, maxNeed);
+      if (need < 1 || k * need <= bestStrength) continue;
+      var idx = chosen.map(function (c) { return c.i; }).sort(function (x, y) { return x - y; });
+      setLocks(idx, need);
+      if (replaySolves(bottles, path)) { bestPlan = { idx: idx, need: need }; bestStrength = k * need; }
+      setLocks(null);
+    }
+    if (bestPlan) setLocks(bestPlan.idx, bestPlan.need);
+    return bestPlan;
+  }
+
+  // Generator: every level is a hill-climbed deal whose run-count lower
+  // bound clears a bar that rises with the smooth targetMoves curve; a
+  // handful of such candidates are certified solvable by the weighted A*
+  // solver and the HARDEST one (exact optimum on small boards, solver
+  // length otherwise) is kept. Candidate count rises with level; the bar
+  // itself (fragTarget) rises with level too. Deterministic per level
+  // (seeded) and fully deterministic: extra candidates are limited by a solver-node budget, not wall-clock time, so a saved level regenerates identically on every device.
+  var GEN_NODE_BUDGET = 1500;   // solver nodes spent on EXTRA candidates (deterministic, unlike wall-clock)
+  var FRAG_RATIO = 0.92;        // lowerBound bar as a fraction of targetMoves
+  var EXACT_MAX_UNITS = 40;     // exact A* (weight 1) is tried up to this many units
+
+  function generateLevel(level, salt) {
+    salt = salt | 0; // optional variant index (tests/tools); 0 = the canonical board
+    level = Math.max(1, Math.floor(Number(level)) || 1);
+    setLocks(null);
     var numColors = computeNumColors(level);
     var numEmpty = computeNumEmpty(level, numColors);
     var capacity = computeCapacity(level);
     setCapacity(capacity);
 
-    var shuffleCount = Math.min(40 + level * 10, 700);
-    // Fragmentation bar rises with level so late boards are provably more
-    // mixed than early ones (checked/asserted by the verification script).
-    var minFragmentation = Math.ceil(numColors * 1.5) + Math.floor(level / 6);
-    var requiredSolverMoves = minSolverMoves(level, numColors);
-    // BFS node budget for the real solver calls. Higher capacity means a
-    // costlier per-node expansion (more possible partial-pour depths), so
-    // the budget shrinks a little as capacity grows to keep each call fast
-    // (measured a few ms to ~100ms per call across capacities 4-7 - see
-    // scratchpad/tune_caps.js).
-    var solverBudget = Math.max(2000, 15000 - (capacity - 4) * 3500);
+    var units = numColors * capacity;
+    var target = targetMoves(level);
+    var maxExcess = units - numColors;
+    var fragTarget = Math.max(7, Math.min(Math.ceil(target * FRAG_RATIO), Math.floor(maxExcess * 0.97)));
+    var wantCandidates = Math.min(3 + Math.floor(level / 40), 8);
+    var weight = units > 60 ? 5 : 3;
+    var nodeBudget = 6000;
+    var usedNodes = 0;
 
-    // N (cheap candidates) scales with level: harder targets are rarer
-    // among random scrambles at low levels too, but the cheap phase is
-    // fast enough to search widely everywhere.
-    var cheapN = Math.min(30 + level * 3, 220);
-
-    var startTime = Date.now();
-    var candidates = []; // { bottles, fragmentation }
-
-    for (var i = 0; i < cheapN; i++) {
-      var seed = ((level * 2654435761 + i * 40503) % 2147483647 + 2147483647) % 2147483647 + 12345;
-      var rng = mulberry32(seed);
-      var bottles = scrambleBoard(numColors, numEmpty, shuffleCount, rng);
-      if (isSolved(bottles) || legalMoves(bottles).length === 0) continue;
-
+    var best = null, bestScore = -1, bestPath = null;
+    var certified = 0;
+    for (var attempt = 0; attempt < 30 && (certified < wantCandidates || best === null); attempt++) {
+      if (best !== null && usedNodes > GEN_NODE_BUDGET) break;
+      // after repeated failures to certify, relax the bar a little each time
+      var ft = attempt < 8 ? fragTarget : Math.max(7, Math.floor(fragTarget * (1 - 0.05 * (attempt - 7))));
+      var seed = ((level * 2654435761 + attempt * 40503 + salt * 7777711) % 2147483647 + 2147483647) % 2147483647 + 12345;
+      var bottles = dealBoard(numColors, numEmpty, capacity, ft, mulberry32(seed));
       var diff = boardDifficulty(bottles);
-      var structOk = diff.completeCount === 0 && diff.quadCount === 0 &&
-        diff.fragmentation >= minFragmentation;
-      candidates.push({ bottles: bottles, fragmentation: diff.fragmentation, structOk: structOk });
+      if (diff.completeCount !== 0 || isSolved(bottles) || legalMoves(bottles).length === 0) continue;
+      var sol = searchSolution(bottles, numColors, weight, nodeBudget);
+      usedNodes += sol.nodes;
+      if (sol.len === null) continue; // not certified solvable
+      certified++;
+      var score = sol.len, path = sol.path;
+      if (units <= EXACT_MAX_UNITS) {
+        var ex = searchSolution(bottles, numColors, 1, 4000);
+        usedNodes += ex.nodes;
+        if (ex.len !== null) { score = ex.len; path = ex.path; }
+      }
+      if (score < 7) continue;
+      if (score > bestScore) { bestScore = score; best = bottles; bestPath = path; }
     }
 
-    // Prefer structurally-valid candidates; among those (or, failing that,
-    // among all candidates as a last resort), sort by fragmentation desc.
-    var pool = candidates.filter(function (c) { return c.structOk; });
-    if (pool.length === 0) pool = candidates;
-    pool.sort(function (a, b) { return b.fragmentation - a.fragmentation; });
-
-    // Evaluate only the top few by fragmentation with the real solver: the
-    // fragmentation ranking already does most of the work (see corr_test.js
-    // above), so trying dozens more rarely beats the first handful and
-    // would otherwise burn the whole time budget chasing a bar that may be
-    // above what this board size can achieve at this capacity (the bar is
-    // a soft target, not a hard requirement - see minSolverMoves).
-    var maxSolverCalls = capacity >= 7 ? 2 : (capacity >= 6 ? 3 : 6);
-    var best = null;
-    var bestSolLen = -1;
-
-    for (var k = 0; k < pool.length && k < maxSolverCalls; k++) {
-      if (k > 0 && Date.now() - startTime > GEN_TIME_BUDGET_MS) break;
-      var solLen = solverLength(pool[k].bottles, solverBudget);
-      var effLen = solLen === null ? Infinity : solLen;
-      if (effLen > bestSolLen) { bestSolLen = effLen; best = pool[k].bottles; }
-      // Good enough (bar cleared, or provably very hard) - stop searching.
-      if (effLen === Infinity || effLen >= requiredSolverMoves) break;
+    var locks = null;
+    if (best) {
+      var plan = computeLockPlan(level);
+      if (plan.count > 0) locks = planLocks(best, bestPath, plan);
+    } else {
+      // Last resort (should be unreachable): a reverse-pour scramble is
+      // solvable by construction, so playability is never lost.
+      var fb = null;
+      for (var f = 0; f < 20 && !fb; f++) {
+        var cand = scrambleBoard(numColors, numEmpty, 60 + f * 40, mulberry32(level * 7919 + f));
+        if (boardDifficulty(cand).completeCount === 0 && !isSolved(cand) && legalMoves(cand).length) fb = cand;
+      }
+      best = fb || buildSolvedState(numColors, numEmpty);
     }
-
-    if (!best) {
-      // Should be unreachable (cheapN always tries at least a few boards),
-      // but guarantees a legal, playable board rather than throwing.
-      best = pool.length ? pool[0].bottles : buildSolvedState(numColors, numEmpty);
-    }
-    return { bottles: best, numColors: numColors, capacity: capacity };
+    return { bottles: best, numColors: numColors, capacity: capacity, locks: locks };
   }
 
   // Deterministic PRNG
@@ -1265,7 +1569,7 @@ body {
   // Solver: BFS/DFS with visited set to verify solvability.
   function isSolvable(bottles, maxStates) {
     maxStates = maxStates || 200000;
-    var startKey = stateKey(bottles);
+    var startKey = lockedStateKey(bottles);
     var visited = new Set([startKey]);
     var queue = [bottles];
     var count = 0;
@@ -1277,7 +1581,7 @@ body {
       var moves = legalMoves(cur);
       for (var i = 0; i < moves.length; i++) {
         var res = pour(cur, moves[i][0], moves[i][1]);
-        var key = stateKey(res.bottles);
+        var key = lockedStateKey(res.bottles);
         if (!visited.has(key)) {
           visited.add(key);
           queue.push(res.bottles);
@@ -1285,6 +1589,18 @@ body {
       }
     }
     return false;
+  }
+
+  // Canonical key that stays valid under locks: interchangeable bottles are
+  // sorted, but bottles designated as lockable keep their identity.
+  function lockedStateKey(bottles) {
+    if (!LOCKS) return stateKey(bottles);
+    var free = [], fixed = [];
+    for (var i = 0; i < bottles.length; i++) {
+      var k = bottles[i].join(',');
+      if (LOCKS.idx.indexOf(i) !== -1) fixed.push(k); else free.push(k);
+    }
+    return free.sort().join('|') + '#' + fixed.join('|');
   }
 
   function stateKey(bottles) {
@@ -1311,12 +1627,21 @@ body {
     computeNumColors: computeNumColors,
     computeNumEmpty: computeNumEmpty,
     solverLength: solverLength,
+    searchSolution: searchSolution,
+    dealBoard: dealBoard,
+    lowerBound: lowerBound,
+    targetMoves: targetMoves,
     minSolverMoves: minSolverMoves,
     scrambleBoard: scrambleBoard,
     getReverseMoves: getReverseMoves,
     countRuns: countRuns,
     setCapacity: setCapacity,
-    computeCapacity: computeCapacity
+    setLocks: setLocks,
+    solidCount: solidCount,
+    isLocked: isLocked,
+    computeCapacity: computeCapacity,
+    computeLockPlan: computeLockPlan,
+    replaySolves: replaySolves
   };
 
   // ---------- UI / App (only runs in browser) ----------
@@ -1510,6 +1835,8 @@ body {
     bestScore: 0,
     bottles: [],
     numColors: 3,
+    locks: null,
+    lockedPrev: null,
     selected: -1,
     animating: false,
     moves: 0,
@@ -1587,6 +1914,8 @@ body {
     state.bottles = gen.bottles;
     state.numColors = gen.numColors;
     state.capacity = gen.capacity;
+    state.locks = gen.locks || null; // mirrors WaterSort's LOCKS, which generateLevel just set
+    state.lockedPrev = null;
     state.selected = -1;
     state.animating = false;
     state.moves = 0;
@@ -1622,6 +1951,7 @@ body {
     el.winTotal = document.getElementById('win-total');
     el.nextBtn = document.getElementById('btn-next');
     el.stuckBanner = document.getElementById('stuck-banner');
+    el.lockNote = document.getElementById('lock-note');
     el.confettiCanvas = document.getElementById('confetti-canvas');
     el.levelProgressFill = document.getElementById('level-progress-fill');
     el.statsBtn = document.getElementById('btn-stats');
@@ -1688,13 +2018,33 @@ body {
     renderStats();
     el.board.innerHTML = '';
     el.board.className = 'board bottles-' + state.bottles.length;
+    var ws = global.WaterSort;
+    var lockedNow = state.bottles.map(function (st, i) { return ws.isLocked(state.bottles, i); });
     state.bottles.forEach(function (stack, idx) {
-      el.board.appendChild(buildBottleEl(stack, idx));
+      var node = buildBottleEl(stack, idx, lockedNow[idx]);
+      // a bottle that was locked on the previous render and is open now
+      // flashes once, so the player sees exactly when the rule fired
+      if (!lockedNow[idx] && state.lockedPrev && state.lockedPrev[idx]) {
+        node.querySelector('.bottle').classList.add('just-unlocked');
+      }
+      el.board.appendChild(node);
     });
+    state.lockedPrev = lockedNow;
+    renderLockNote();
     checkStuck();
   }
 
-  function buildBottleEl(stack, idx) {
+  function renderLockNote() {
+    if (!el.lockNote) return;
+    document.body.classList.toggle('has-locks', !!state.locks);
+    if (!state.locks) { el.lockNote.hidden = true; return; }
+    var have = global.WaterSort.solidCount(state.bottles);
+    el.lockNote.hidden = false;
+    el.lockNote.textContent = STR.lockNote(state.locks.need, have);
+    el.lockNote.classList.toggle('open', have >= state.locks.need);
+  }
+
+  function buildBottleEl(stack, idx, locked) {
     var wrap = document.createElement('div');
     wrap.className = 'bottle-wrap';
     var bottle = document.createElement('div');
@@ -1703,7 +2053,16 @@ body {
     bottle.dataset.index = String(idx);
     bottle.setAttribute('role', 'button');
     bottle.setAttribute('tabindex', '0');
-    bottle.setAttribute('aria-label', STR.bottleLabel(idx + 1));
+    bottle.setAttribute('aria-label', locked ? STR.lockedLabel(idx + 1) : STR.bottleLabel(idx + 1));
+    if (locked) {
+      bottle.classList.add('locked');
+      var badge = document.createElement('div');
+      badge.className = 'lock-badge';
+      badge.setAttribute('aria-hidden', 'true');
+      badge.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M7 10V8a5 5 0 0 1 10 0v2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><rect x="4.5" y="10" width="15" height="11" rx="2.5" fill="currentColor"/><circle cx="12" cy="15.5" r="1.7" fill="#1a1d2e"/></svg>' +
+        '<span class="lock-need">' + Math.max(0, state.locks.need - global.WaterSort.solidCount(state.bottles)) + '</span>';
+      bottle.appendChild(badge);
+    }
 
     var liquidWrap = document.createElement('div');
     liquidWrap.className = 'liquid-wrap';
@@ -1817,6 +2176,12 @@ body {
     clearHint();
     if (state.selected === -1) {
       if (state.bottles[idx].length === 0) return;
+      if (global.WaterSort.isLocked(state.bottles, idx)) {
+        // a locked bottle can't be picked up: say so visibly
+        requestAnimationFrame(function () { sounds.error(); });
+        shake(el.board.children[idx]);
+        return;
+      }
       state.selected = idx;
       setSelectedVisual(idx, true);
       // Sound is fired async (rAF) so WebAudio setup/resume never delays

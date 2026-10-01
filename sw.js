@@ -2,7 +2,7 @@
 // Versioned cache-first offline support. Uses relative paths so it works
 // under a GitHub Pages project subpath as well as at the domain root.
 
-var CACHE_NAME = 'watersort-v1';
+var CACHE_NAME = 'watersort-v2'; // bumped: new difficulty curve + locked bottles
 
 // Resolve all asset URLs relative to this file's own location so the SW
 // works correctly regardless of the path/subpath it is served from.
