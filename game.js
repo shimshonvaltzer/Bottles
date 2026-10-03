@@ -110,7 +110,12 @@
     statsHints: 'רמזים בשימוש',
     statsUndos: 'ביטולים בשימוש',
     statsStreak: 'רצף נוכחי',
-    statsBestStreak: 'רצף שיא'
+    statsBestStreak: 'רצף שיא',
+    resetBtn: 'התחל מהתחלה',
+    resetTitle: 'להתחיל מהתחלה?',
+    resetText: 'כל ההתקדמות, הניקוד, השיא והסטטיסטיקות יימחקו. לא ניתן לבטל פעולה זו.',
+    resetYes: 'כן, אפס',
+    resetNo: 'ביטול'
   };
 
   // ---------- Pure game logic ----------
@@ -963,6 +968,8 @@
     }).catch(function () { return null; });
   }
 
+  var resetEpoch = 0; // bumped by resetAllProgress so a stale async IDB read can't resurrect old data
+
   function saveProgress() {
     var data = buildSaveData();
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { /* memory-only fallback */ }
@@ -989,7 +996,9 @@
     // Async: also check IndexedDB for a possibly newer/further-along save
     // (e.g. localStorage was cleared but IndexedDB survived, or vice
     // versa), merge, and re-render only if it actually changes anything.
+    var epochAtLoad = resetEpoch;
     idbLoad().then(function (idbData) {
+      if (epochAtLoad !== resetEpoch) return; // progress was reset meanwhile
       try {
         if (idbData && isValidSaveData(idbData)) {
           var winner = pickNewer(local, idbData);
@@ -1134,6 +1143,10 @@
     el.statsBtn = document.getElementById('btn-stats');
     el.statsOverlay = document.getElementById('stats-overlay');
     el.statsCloseBtn = document.getElementById('btn-stats-close');
+    el.resetBtn = document.getElementById('btn-reset');
+    el.confirmOverlay = document.getElementById('confirm-overlay');
+    el.confirmYes = document.getElementById('btn-confirm-yes');
+    el.confirmNo = document.getElementById('btn-confirm-no');
     el.sLevels = document.getElementById('s-levels');
     el.sMoves = document.getElementById('s-moves');
     el.sHints = document.getElementById('s-hints');
@@ -1189,6 +1202,23 @@
   function onStatsClose() {
     el.statsOverlay.hidden = true;
   }
+
+  function resetAllProgress() {
+    resetEpoch++;
+    // Wipe every store, including the legacy key so migration cannot restore old data.
+    try { localStorage.removeItem(OLD_STORAGE_KEY); } catch (e) { /* ignore */ }
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+    state.score = 0;
+    state.bestScore = 0;
+    state.stats = defaultStats();
+    state.won = false;
+    hideWinOverlay();
+    el.confirmOverlay.hidden = true;
+    el.statsOverlay.hidden = true;
+    startLevel(1); // saves fresh state (level 1, settings kept) to localStorage + IndexedDB and renders
+  }
+  function onResetAsk() { el.confirmOverlay.hidden = false; }
+  function onResetCancel() { el.confirmOverlay.hidden = true; }
 
   function render() {
     renderStats();
@@ -1772,6 +1802,9 @@
     onFastTap(el.nextBtn, onNextLevel);
     onFastTap(el.statsBtn, onStatsOpen);
     onFastTap(el.statsCloseBtn, onStatsClose);
+    onFastTap(el.resetBtn, onResetAsk);
+    onFastTap(el.confirmYes, resetAllProgress);
+    onFastTap(el.confirmNo, onResetCancel);
     startLevel(state.level);
   }
 

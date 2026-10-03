@@ -734,6 +734,35 @@ body > * { position: relative; z-index: 1; }
 .stats-num { font-size: 1.5rem; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1.1; }
 .stats-lbl { font-size: 0.72rem; color: var(--text-dim); text-align: center; }
 
+/* ---------- Reset / confirm ---------- */
+.btn-danger, .btn-secondary {
+  min-height: 48px;
+  padding: 0 var(--space-4);
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.btn-danger {
+  width: 100%;
+  margin-top: var(--space-4);
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--danger);
+}
+.btn-danger:active { background: rgba(239, 68, 68, 0.18); }
+.btn-danger-solid { margin-top: 0; color: #fff; background: var(--danger); }
+.btn-danger-solid:active { background: #c53030; }
+.btn-secondary { width: 100%; color: var(--text); background: rgba(255,255,255,0.06); border: 1px solid var(--line); }
+.btn-secondary:active { background: rgba(255,255,255,0.14); }
+.btn-danger:focus-visible, .btn-secondary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.confirm-overlay { z-index: 60; }
+.confirm-card { width: min(100%, 340px); text-align: center; }
+.confirm-text { margin: 0 0 var(--space-5); color: var(--text-dim); font-size: 0.95rem; line-height: 1.5; }
+.confirm-actions { display: flex; flex-direction: column; gap: var(--space-2); }
+
 /* ---------- Roomy screens ---------- */
 @media (min-width: 600px) and (min-height: 700px) {
   .main, .controls, .header { padding-inline: max(var(--space-5), calc((100vw - 640px) / 2)); }
@@ -819,6 +848,18 @@ body > * { position: relative; z-index: 1; }
         <div class="stats-item"><span class="stats-num" id="s-undos">0</span><span class="stats-lbl">ביטולים בשימוש</span></div>
         <div class="stats-item"><span class="stats-num" id="s-streak">0</span><span class="stats-lbl">רצף נוכחי</span></div>
         <div class="stats-item"><span class="stats-num" id="s-best-streak">0</span><span class="stats-lbl">רצף שיא</span></div>
+      </div>
+      <button id="btn-reset" class="btn-danger" type="button">התחל מהתחלה</button>
+    </div>
+  </div>
+
+  <div id="confirm-overlay" class="stats-overlay confirm-overlay" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text" hidden>
+    <div class="stats-card confirm-card">
+      <h2 id="confirm-title">להתחיל מהתחלה?</h2>
+      <p id="confirm-text" class="confirm-text">כל ההתקדמות, הניקוד, השיא והסטטיסטיקות יימחקו. לא ניתן לבטל פעולה זו.</p>
+      <div class="confirm-actions">
+        <button id="btn-confirm-yes" class="btn-danger btn-danger-solid" type="button">כן, אפס</button>
+        <button id="btn-confirm-no" class="btn-secondary" type="button">ביטול</button>
       </div>
     </div>
   </div>
@@ -947,7 +988,12 @@ body > * { position: relative; z-index: 1; }
     statsHints: 'רמזים בשימוש',
     statsUndos: 'ביטולים בשימוש',
     statsStreak: 'רצף נוכחי',
-    statsBestStreak: 'רצף שיא'
+    statsBestStreak: 'רצף שיא',
+    resetBtn: 'התחל מהתחלה',
+    resetTitle: 'להתחיל מהתחלה?',
+    resetText: 'כל ההתקדמות, הניקוד, השיא והסטטיסטיקות יימחקו. לא ניתן לבטל פעולה זו.',
+    resetYes: 'כן, אפס',
+    resetNo: 'ביטול'
   };
 
   // ---------- Pure game logic ----------
@@ -1800,6 +1846,8 @@ body > * { position: relative; z-index: 1; }
     }).catch(function () { return null; });
   }
 
+  var resetEpoch = 0; // bumped by resetAllProgress so a stale async IDB read can't resurrect old data
+
   function saveProgress() {
     var data = buildSaveData();
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { /* memory-only fallback */ }
@@ -1826,7 +1874,9 @@ body > * { position: relative; z-index: 1; }
     // Async: also check IndexedDB for a possibly newer/further-along save
     // (e.g. localStorage was cleared but IndexedDB survived, or vice
     // versa), merge, and re-render only if it actually changes anything.
+    var epochAtLoad = resetEpoch;
     idbLoad().then(function (idbData) {
+      if (epochAtLoad !== resetEpoch) return; // progress was reset meanwhile
       try {
         if (idbData && isValidSaveData(idbData)) {
           var winner = pickNewer(local, idbData);
@@ -1971,6 +2021,10 @@ body > * { position: relative; z-index: 1; }
     el.statsBtn = document.getElementById('btn-stats');
     el.statsOverlay = document.getElementById('stats-overlay');
     el.statsCloseBtn = document.getElementById('btn-stats-close');
+    el.resetBtn = document.getElementById('btn-reset');
+    el.confirmOverlay = document.getElementById('confirm-overlay');
+    el.confirmYes = document.getElementById('btn-confirm-yes');
+    el.confirmNo = document.getElementById('btn-confirm-no');
     el.sLevels = document.getElementById('s-levels');
     el.sMoves = document.getElementById('s-moves');
     el.sHints = document.getElementById('s-hints');
@@ -2026,6 +2080,23 @@ body > * { position: relative; z-index: 1; }
   function onStatsClose() {
     el.statsOverlay.hidden = true;
   }
+
+  function resetAllProgress() {
+    resetEpoch++;
+    // Wipe every store, including the legacy key so migration cannot restore old data.
+    try { localStorage.removeItem(OLD_STORAGE_KEY); } catch (e) { /* ignore */ }
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+    state.score = 0;
+    state.bestScore = 0;
+    state.stats = defaultStats();
+    state.won = false;
+    hideWinOverlay();
+    el.confirmOverlay.hidden = true;
+    el.statsOverlay.hidden = true;
+    startLevel(1); // saves fresh state (level 1, settings kept) to localStorage + IndexedDB and renders
+  }
+  function onResetAsk() { el.confirmOverlay.hidden = false; }
+  function onResetCancel() { el.confirmOverlay.hidden = true; }
 
   function render() {
     renderStats();
@@ -2609,6 +2680,9 @@ body > * { position: relative; z-index: 1; }
     onFastTap(el.nextBtn, onNextLevel);
     onFastTap(el.statsBtn, onStatsOpen);
     onFastTap(el.statsCloseBtn, onStatsClose);
+    onFastTap(el.resetBtn, onResetAsk);
+    onFastTap(el.confirmYes, resetAllProgress);
+    onFastTap(el.confirmNo, onResetCancel);
     startLevel(state.level);
   }
 

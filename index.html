@@ -77,6 +77,18 @@
         <div class="stats-item"><span class="stats-num" id="s-streak">0</span><span class="stats-lbl">רצף נוכחי</span></div>
         <div class="stats-item"><span class="stats-num" id="s-best-streak">0</span><span class="stats-lbl">רצף שיא</span></div>
       </div>
+      <button id="btn-reset" class="btn-danger" type="button">התחל מהתחלה</button>
+    </div>
+  </div>
+
+  <div id="confirm-overlay" class="stats-overlay confirm-overlay" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text" hidden>
+    <div class="stats-card confirm-card">
+      <h2 id="confirm-title">להתחיל מהתחלה?</h2>
+      <p id="confirm-text" class="confirm-text">כל ההתקדמות, הניקוד, השיא והסטטיסטיקות יימחקו. לא ניתן לבטל פעולה זו.</p>
+      <div class="confirm-actions">
+        <button id="btn-confirm-yes" class="btn-danger btn-danger-solid" type="button">כן, אפס</button>
+        <button id="btn-confirm-no" class="btn-secondary" type="button">ביטול</button>
+      </div>
     </div>
   </div>
 
