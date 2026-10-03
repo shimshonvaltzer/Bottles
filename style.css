@@ -252,7 +252,7 @@ body > * { position: relative; z-index: 1; }
 .board {
   flex: 1 1 0;
   min-height: 0;
-  width: calc(var(--bw) * 5 + var(--gx) * 4);
+  width: calc(var(--bw) * var(--cols, 5) + var(--gx) * (var(--cols, 5) - 1));
   max-width: 100%;
   display: flex;
   flex-wrap: wrap;

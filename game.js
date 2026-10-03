@@ -1177,7 +1177,7 @@
     el.addCount.textContent = state.addsLeft;
     el.hintCount.textContent = state.hintsLeft;
     el.undoBtn.disabled = state.undosLeft <= 0 || state.history.length === 0;
-    el.addBtn.disabled = state.addsLeft <= 0;
+    el.addBtn.disabled = state.addsLeft <= 0 || state.animating;
     el.hintBtn.disabled = state.hintsLeft <= 0;
     el.muteBtn.setAttribute('aria-pressed', String(state.muted));
     el.cbBtn.setAttribute('aria-pressed', String(state.colorblind));
@@ -1250,13 +1250,14 @@
     var mainEl = b.parentNode, cs = window.getComputedStyle(mainEl);
     var W = mainEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), H = b.clientHeight;
     if (!W || !H) return;
-    var n = state.bottles.length, rows = Math.ceil(n / 5);
+    var n = state.bottles.length, cols = n >= 15 ? 6 : 5, rows = Math.ceil(n / cols);
     var gx = W < 340 ? 6 : 8, gy = rows > 2 ? 6 : (rows === 2 ? 12 : 10), lift = 10;
     var bhAvail = Math.floor((H - (rows - 1) * gy) / rows - lift);
-    var bw = Math.floor(Math.min(80, (W - 4 * gx) / 5, bhAvail / 2.5));
+    var bw = Math.floor(Math.min(80, (W - (cols - 1) * gx) / cols, bhAvail / 2.5));
     var bh = Math.floor(Math.min(bhAvail, bw * (rows === 1 ? 3.4 : 3.1)));
     if (bw < 20 || bh < 40) return;
     var s = b.style;
+    s.setProperty('--cols', cols);
     s.setProperty('--bw', bw + 'px');
     s.setProperty('--bh', bh + 'px');
     s.setProperty('--bd', (bw < 46 ? 2 : 3) + 'px');
@@ -1390,7 +1391,8 @@
   function pushHistory() {
     state.history.push({
       bottles: state.bottles.map(function (s) { return s.slice(); }),
-      moves: state.moves
+      moves: state.moves,
+      addsLeft: state.addsLeft
     });
   }
 
@@ -1510,6 +1512,7 @@
     if (!fromBottle || !toBottle) { done(); return; }
 
     state.animating = true;
+    if (el.addBtn) el.addBtn.disabled = true;
     var streamEl = null;
     var finished = false;
     function cleanupAndFinish() {
@@ -1521,6 +1524,7 @@
       fromBottle.style.removeProperty('--tilt-y');
       if (streamEl && streamEl.parentNode) streamEl.parentNode.removeChild(streamEl);
       state.animating = false;
+      if (el.addBtn) el.addBtn.disabled = state.addsLeft <= 0;
       done();
     }
     // Absolute safety net: even if a rect/layout read throws, or a timer is
@@ -1622,6 +1626,7 @@
     var prev = state.history.pop();
     state.bottles = prev.bottles;
     state.moves = prev.moves;
+    if (typeof prev.addsLeft === 'number') state.addsLeft = prev.addsLeft;
     state.undosLeft--;
     state.stats.totalUndos++;
     state.selected = -1;
@@ -1638,9 +1643,8 @@
 
   function onAddBottle() {
     if (state.animating || state.addsLeft <= 0) return;
-    if (state.bottles.length >= 14) return;
+    pushHistory(); // snapshot BEFORE spending the add so Undo restores the count
     state.addsLeft--;
-    pushHistory();
     state.bottles.push([]);
     render();
   }
