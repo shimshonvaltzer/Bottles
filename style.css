@@ -679,6 +679,8 @@ body > * { position: relative; z-index: 1; }
 .win-breakdown { position: relative; width: 100%; margin-bottom: var(--space-3); font-size: 0.85rem; }
 .wb-row { display: flex; justify-content: space-between; gap: var(--space-3); padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-variant-numeric: tabular-nums; }
 .wb-row.neg .wb-val { color: #ff9a9a; }
+.wb-row.pos .wb-val { color: #8fe3a0; }
+.wb-row.note { font-size: 0.85em; opacity: 0.85; justify-content: center; }
 .wb-val { font-weight: 700; }
 .win-score {
   font-size: 1.5rem;

@@ -112,6 +112,9 @@
     winExtra: function (n) { return 'מהלכים עודפים (' + n + ')'; },
     winHints: function (n) { return 'רמזים (' + n + ')'; },
     winAdds: function (n) { return 'בקבוקים שנוספו (' + n + ')'; },
+    winBonus: function (n) { return 'בונוס על ' + n + ' מהלכים מתחת למינימום'; },
+    winRecord: 'שיא חדש! עקפת את המינימום',
+    winNoBonus: 'אין בונוס כשמוסיפים בקבוק',
     winLevelScore: function (n) { return 'ניקוד השלב: +' + n; },
     statsLevels: 'שלבים שהושלמו',
     statsMoves: 'סה"כ מהלכים',
@@ -1102,29 +1105,37 @@
   // (computed once by generateLevel; an upper bound on very large boards).
   //   max        = 100 + 5 * par             (bigger/harder levels are worth more)
   //   perMove    = max(2, round(max / (2*par)))  (2x par moves loses ~half the max)
-  //   score      = max - perMove * max(0, moves - par)
+  //   score      = max - perMove * max(0, moves - par)      (above par)
+  //                    + perMove * (par - moves)              (below par, see bonus)
   //                    - 10 * hintsUsed - 25 * bottlesAdded
   //   floor      = 10% of max (finishing always pays something)
-  // Finishing in <= par moves is never rewarded beyond max and never
-  // penalised. Undo: undone moves cost nothing - only the FINAL move count
+  // Symmetric: each move above par costs perMove, each move BELOW par earns
+  // perMove. Bonus rules: (1) capped at +50% of max (score never above
+  // 1.5*max), since par is only an upper bound on most levels; (2) applies
+  // ONLY if no bottle was added in the level (an extra bottle makes shorter
+  // solutions possible); with any bottle added, below-par finishes score as
+  // exactly par. Hints do not block the bonus (they still cost 10 each).
+  // Undo: undone moves cost nothing - only the FINAL move count
   // (the counter goes down on undo) is compared with par. Hints stay paid
   // even if the move is undone. Added bottles are counted net (Undo of an
-  // add refunds it), and cost a fixed amount so an extra bottle cannot beat
-  // par for free. Stars depend on moves only: 3 at <= par, 2 within
+  // add refunds it). Stars depend on moves only: 3 at <= par, 2 within
   // max(2, ceil(25% of par)) extra moves, otherwise 1.
-  var HINT_COST = 10, ADD_COST = 25, MIN_SCORE_FRAC = 0.1;
+  var HINT_COST = 10, ADD_COST = 25, MIN_SCORE_FRAC = 0.1, BONUS_CAP_FRAC = 0.5;
   function computeLevelScore(moves, par, hintsUsed, addsUsed) {
     var max = 100 + 5 * par;
     var perMove = Math.max(2, Math.round(max / (2 * par)));
     var extra = Math.max(0, moves - par);
     var movePenalty = extra * perMove;
+    var below = Math.max(0, par - moves);
+    var bonus = addsUsed > 0 ? 0 : Math.min(below * perMove, Math.floor(max * BONUS_CAP_FRAC));
+    var bonusBlocked = addsUsed > 0 && below > 0;
     var hintPenalty = hintsUsed * HINT_COST;
     var addPenalty = addsUsed * ADD_COST;
     var floor = Math.ceil(max * MIN_SCORE_FRAC);
-    var score = Math.max(floor, max - movePenalty - hintPenalty - addPenalty);
+    var score = Math.max(floor, max + bonus - movePenalty - hintPenalty - addPenalty);
     var margin = Math.max(2, Math.ceil(par * 0.25));
     var stars = extra === 0 ? 3 : (extra <= margin ? 2 : 1);
-    return { score: score, max: max, perMove: perMove, extra: extra, movePenalty: movePenalty,
+    return { score: score, max: max, perMove: perMove, extra: extra, movePenalty: movePenalty, bonus: bonus, below: below, bonusBlocked: bonusBlocked,
              hintPenalty: hintPenalty, addPenalty: addPenalty, stars: stars };
   }
 
@@ -1768,6 +1779,9 @@
     var rows = [];
     if (state.par) rows.push([STR.winMoves, STR.winMovesVal(state.moves, state.par), '']);
     rows.push([STR.winMax, String(r.max), 'num']);
+    if (r.bonus) rows.push([STR.winBonus(Math.ceil(r.bonus / r.perMove)), '+' + r.bonus, 'pos']);
+    if (r.bonus) rows.push([STR.winRecord, '', 'note']);
+    if (r.bonusBlocked) rows.push([STR.winNoBonus, '', 'note']);
     if (r.movePenalty) rows.push([STR.winExtra(r.extra), '\u2212' + r.movePenalty, 'neg']);
     var hu = r.hintPenalty / HINT_COST, au = r.addPenalty / ADD_COST;
     if (r.hintPenalty) rows.push([STR.winHints(hu), '\u2212' + r.hintPenalty, 'neg']);
