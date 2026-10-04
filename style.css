@@ -224,6 +224,7 @@ body > * { position: relative; z-index: 1; }
   white-space: nowrap;
 }
 .stat-label { font-size: 0.7rem; font-weight: 600; color: var(--text-dim); }
+.stat-par { color: var(--text-dim); font-weight: 600; }
 .stat-value { font-size: 0.95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* ---------- Main / board ---------- */
@@ -675,6 +676,10 @@ body > * { position: relative; z-index: 1; }
   70% { transform: scale(1.25) rotate(8deg); opacity: 1; }
   100% { transform: scale(1) rotate(0); }
 }
+.win-breakdown { position: relative; width: 100%; margin-bottom: var(--space-3); font-size: 0.85rem; }
+.wb-row { display: flex; justify-content: space-between; gap: var(--space-3); padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-variant-numeric: tabular-nums; }
+.wb-row.neg .wb-val { color: #ff9a9a; }
+.wb-val { font-weight: 700; }
 .win-score {
   font-size: 1.5rem;
   font-weight: 800;

@@ -105,6 +105,14 @@
     winTitle: 'כל הכבוד!',
     winPoints: function (n) { return '+' + n + ' נקודות'; },
     winTotal: function (n) { return 'סה"כ: ' + n; },
+    parLabel: function (par) { return 'מינימום ' + par + ' מהלכים'; },
+    winMoves: 'מהלכים',
+    winMovesVal: function (moves, par) { return moves + ' מתוך ' + par; },
+    winMax: 'ניקוד מלא לשלב',
+    winExtra: function (n) { return 'מהלכים עודפים (' + n + ')'; },
+    winHints: function (n) { return 'רמזים (' + n + ')'; },
+    winAdds: function (n) { return 'בקבוקים שנוספו (' + n + ')'; },
+    winLevelScore: function (n) { return 'ניקוד השלב: +' + n; },
     statsLevels: 'שלבים שהושלמו',
     statsMoves: 'סה"כ מהלכים',
     statsHints: 'רמזים בשימוש',
@@ -696,7 +704,7 @@
     var nodeBudget = 6000;
     var usedNodes = 0;
 
-    var best = null, bestScore = -1, bestPath = null;
+    var best = null, bestScore = -1, bestPath = null, bestExact = false;
     var certified = 0;
     for (var attempt = 0; attempt < 30 && (certified < wantCandidates || best === null); attempt++) {
       if (best !== null && usedNodes > GEN_NODE_BUDGET) break;
@@ -710,18 +718,24 @@
       usedNodes += sol.nodes;
       if (sol.len === null) continue; // not certified solvable
       certified++;
-      var score = sol.len, path = sol.path;
+      var score = sol.len, path = sol.path, exact = false;
       if (units <= EXACT_MAX_UNITS) {
         var ex = searchSolution(bottles, numColors, 1, 4000);
         usedNodes += ex.nodes;
-        if (ex.len !== null) { score = ex.len; path = ex.path; }
+        if (ex.len !== null) { score = ex.len; path = ex.path; exact = true; }
       }
       if (score < 7) continue;
-      if (score > bestScore) { bestScore = score; best = bottles; bestPath = path; }
+      if (score > bestScore) { bestScore = score; best = bottles; bestPath = path; bestExact = exact; }
     }
 
     var locks = null;
+    // par = length of the solution found for the FINAL board (reused from the
+    // search above, no extra solve). parExact: true = proven minimum (weight-1
+    // A* finished), false = upper bound (weighted search). Locks only restrict
+    // moves, and planLocks keeps the same path legal, so par stays valid.
+    var par = null, parExact = false;
     if (best) {
+      par = bestPath.length; parExact = bestExact;
       var plan = computeLockPlan(level);
       if (plan.count > 0) locks = planLocks(best, bestPath, plan);
     } else {
@@ -733,8 +747,11 @@
         if (boardDifficulty(cand).completeCount === 0 && !isSolved(cand) && legalMoves(cand).length) fb = cand;
       }
       best = fb || buildSolvedState(numColors, numEmpty);
+      var fs = searchSolution(best, numColors, 5, 20000); // unreachable path: cost is irrelevant
+      if (fs.len !== null) { par = fs.len; bestPath = fs.path; }
     }
-    return { bottles: best, numColors: numColors, capacity: capacity, locks: locks };
+    return { bottles: best, numColors: numColors, capacity: capacity, locks: locks,
+             par: par, parExact: parExact, solution: par === null ? null : bestPath };
   }
 
   // Deterministic PRNG
@@ -1025,6 +1042,7 @@
     selected: -1,
     animating: false,
     moves: 0,
+    par: null,
     undosLeft: 5,
     addsLeft: 2,
     hintsLeft: 3,
@@ -1080,12 +1098,34 @@
   };
 
   // ---------- Scoring ----------
-  function computeLevelScore(moves, undosUsed, undosTotal) {
-    var base = 100;
-    var movePenalty = Math.max(0, moves - 10) * 2;
-    var undoBonus = Math.max(0, (undosTotal - undosUsed)) * 15;
-    var moveBonus = Math.max(0, 60 - movePenalty);
-    return base + moveBonus + undoBonus;
+  // PAR scoring. par = minimum number of moves needed to solve the level
+  // (computed once by generateLevel; an upper bound on very large boards).
+  //   max        = 100 + 5 * par             (bigger/harder levels are worth more)
+  //   perMove    = max(2, round(max / (2*par)))  (2x par moves loses ~half the max)
+  //   score      = max - perMove * max(0, moves - par)
+  //                    - 10 * hintsUsed - 25 * bottlesAdded
+  //   floor      = 10% of max (finishing always pays something)
+  // Finishing in <= par moves is never rewarded beyond max and never
+  // penalised. Undo: undone moves cost nothing - only the FINAL move count
+  // (the counter goes down on undo) is compared with par. Hints stay paid
+  // even if the move is undone. Added bottles are counted net (Undo of an
+  // add refunds it), and cost a fixed amount so an extra bottle cannot beat
+  // par for free. Stars depend on moves only: 3 at <= par, 2 within
+  // max(2, ceil(25% of par)) extra moves, otherwise 1.
+  var HINT_COST = 10, ADD_COST = 25, MIN_SCORE_FRAC = 0.1;
+  function computeLevelScore(moves, par, hintsUsed, addsUsed) {
+    var max = 100 + 5 * par;
+    var perMove = Math.max(2, Math.round(max / (2 * par)));
+    var extra = Math.max(0, moves - par);
+    var movePenalty = extra * perMove;
+    var hintPenalty = hintsUsed * HINT_COST;
+    var addPenalty = addsUsed * ADD_COST;
+    var floor = Math.ceil(max * MIN_SCORE_FRAC);
+    var score = Math.max(floor, max - movePenalty - hintPenalty - addPenalty);
+    var margin = Math.max(2, Math.ceil(par * 0.25));
+    var stars = extra === 0 ? 3 : (extra <= margin ? 2 : 1);
+    return { score: score, max: max, perMove: perMove, extra: extra, movePenalty: movePenalty,
+             hintPenalty: hintPenalty, addPenalty: addPenalty, stars: stars };
   }
 
   // ---------- Level setup ----------
@@ -1104,6 +1144,7 @@
     state.enterNext = true;
     state.selected = -1;
     state.animating = false;
+    state.par = gen.par;
     state.moves = 0;
     state.undosLeft = UNDOS_PER_LEVEL;
     state.addsLeft = ADDS_PER_LEVEL;
@@ -1121,6 +1162,9 @@
     el.level = document.getElementById('stat-level');
     el.score = document.getElementById('stat-score');
     el.moves = document.getElementById('stat-moves');
+    el.par = document.getElementById('stat-par');
+    el.parBox = document.getElementById('stat-moves-box');
+    el.winBreakdown = document.getElementById('win-breakdown');
     el.best = document.getElementById('stat-best');
     el.undoBtn = document.getElementById('btn-undo');
     el.undoCount = document.getElementById('undo-count');
@@ -1172,6 +1216,8 @@
     el.level.textContent = state.level;
     el.score.textContent = state.score;
     el.moves.textContent = state.moves;
+    el.par.textContent = state.par ? '/' + state.par : '';
+    el.parBox.title = state.par ? STR.parLabel(state.par) : '';
     el.best.textContent = state.bestScore;
     el.undoCount.textContent = state.undosLeft;
     el.addCount.textContent = state.addsLeft;
@@ -1689,7 +1735,9 @@
 
   function onWin() {
     state.won = true;
-    var levelScore = computeLevelScore(state.moves, UNDOS_PER_LEVEL - state.undosLeft, UNDOS_PER_LEVEL);
+    var result = computeLevelScore(state.moves, state.par || state.moves, HINTS_PER_LEVEL - state.hintsLeft, ADDS_PER_LEVEL - state.addsLeft);
+    var levelScore = result.score;
+    state.lastResult = result;
     state.score += levelScore;
     if (state.score > state.bestScore) state.bestScore = state.score;
     state.stats.levelsCompleted++;
@@ -1704,21 +1752,36 @@
     saveProgress();
     sounds.win();
     renderStats();
-    showWinOverlay(levelScore);
+    showWinOverlay(levelScore, result);
     launchConfetti();
   }
 
-  function showWinOverlay(levelScore) {
-    var stars = 1;
-    if (state.moves <= 15) stars = 3; else if (state.moves <= 25) stars = 2;
+  function showWinOverlay(levelScore, r) {
+    var stars = r.stars;
     el.winStars.innerHTML = '';
     for (var i = 0; i < 3; i++) {
       var s = document.createElement('span');
       s.className = i < stars ? 'star' : 'star off';
-      s.textContent = '★';
+      s.textContent = '\u2605';
       el.winStars.appendChild(s);
     }
-    el.winScore.textContent = STR.winPoints(levelScore);
+    var rows = [];
+    if (state.par) rows.push([STR.winMoves, STR.winMovesVal(state.moves, state.par), '']);
+    rows.push([STR.winMax, String(r.max), 'num']);
+    if (r.movePenalty) rows.push([STR.winExtra(r.extra), '\u2212' + r.movePenalty, 'neg']);
+    var hu = r.hintPenalty / HINT_COST, au = r.addPenalty / ADD_COST;
+    if (r.hintPenalty) rows.push([STR.winHints(hu), '\u2212' + r.hintPenalty, 'neg']);
+    if (r.addPenalty) rows.push([STR.winAdds(au), '\u2212' + r.addPenalty, 'neg']);
+    el.winBreakdown.innerHTML = '';
+    rows.forEach(function (row) {
+      var d = document.createElement('div');
+      d.className = 'wb-row ' + row[2];
+      var a = document.createElement('span'); a.textContent = row[0];
+      var b = document.createElement('span'); b.className = 'wb-val'; if (row[2]) b.setAttribute('dir', 'ltr'); b.textContent = row[1];
+      d.appendChild(a); d.appendChild(b);
+      el.winBreakdown.appendChild(d);
+    });
+    el.winScore.textContent = STR.winLevelScore(levelScore);
     el.winTotal.textContent = STR.winTotal(state.score);
     el.winOverlay.hidden = false;
     el.winOverlay.classList.add('show');
@@ -1819,6 +1882,6 @@
   }
 
   // expose a few things for debugging/testing in-browser
-  global.WaterSortApp = { state: state, startLevel: startLevel, onWin: onWin };
+  global.WaterSortApp = { computeLevelScore: computeLevelScore, state: state, startLevel: startLevel, onWin: onWin };
 
 })(typeof globalThis !== 'undefined' ? globalThis : this);

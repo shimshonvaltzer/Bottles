@@ -2,7 +2,7 @@
 // Versioned cache-first offline support. Uses relative paths so it works
 // under a GitHub Pages project subpath as well as at the domain root.
 
-var CACHE_NAME = 'watersort-v5'; // bumped: UI upgrade (responsive board, new header/controls)
+var CACHE_NAME = 'watersort-v6'; // bumped: par-based scoring
 
 // Resolve all asset URLs relative to this file's own location so the SW
 // works correctly regardless of the path/subpath it is served from.
