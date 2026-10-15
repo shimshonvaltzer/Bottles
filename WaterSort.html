@@ -2312,17 +2312,18 @@ body > * { position: relative; z-index: 1; }
   // is ever suppressed), guarding against acting twice for the same tap.
   var supportsPointerEvents = typeof window !== 'undefined' && !!window.PointerEvent;
   function onFastTap(target, handler) {
-    var suppressNextClick = false;
     if (supportsPointerEvents) {
       target.addEventListener('pointerdown', function (e) {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
-        suppressNextClick = true;
         handler(e);
-        setTimeout(function () { suppressNextClick = false; }, 500);
       });
     }
+    // With pointer events, pointerdown is the only pointer input path. The
+    // trailing synthesized click may land on a re-rendered element (or after
+    // a long press), so it is ignored; only click events with detail === 0
+    // (keyboard / assistive tech / programmatic click()) are handled.
     target.addEventListener('click', function (e) {
-      if (suppressNextClick) { suppressNextClick = false; return; }
+      if (supportsPointerEvents && e.detail !== 0) return;
       handler(e);
     });
   }
