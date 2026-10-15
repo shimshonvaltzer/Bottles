@@ -38,6 +38,23 @@
     CAPACITY = n;
     if (global.WaterSort) global.WaterSort.CAPACITY = n;
   }
+  // ---------- Per-container capacity (the "vial") ----------
+  // Capacity is level-wide (CAPACITY) for every generated bottle, but the
+  // player may add ONE small vial per level with capacity VIAL_CAPACITY.
+  // Per-container capacity is passed as an optional parallel array `caps`
+  // (caps[i] = capacity of bottles[i]) to canPour / pour / legalMoves /
+  // isSolved / isLocked / solidCount. caps omitted (generator, solver, par,
+  // lock planning, tests) means "every container holds CAPACITY", so
+  // generation and solving are byte-for-byte unchanged. A container whose
+  // capacity is below CAPACITY is a "vial".
+  var VIAL_CAPACITY = 2;
+  function capOf(caps, i) {
+    return (caps && caps[i] != null) ? caps[i] : CAPACITY;
+  }
+  function isVial(caps, i) {
+    return capOf(caps, i) < CAPACITY;
+  }
+
   // ---------- Difficulty curve ----------
   // ONE smooth, strictly increasing target drives every level:
   //   targetMoves(L) = 7 + 17*(1 - e^(-L/25)) + 0.21*L
@@ -112,6 +129,8 @@
     winExtra: function (n) { return 'מהלכים עודפים (' + n + ')'; },
     winHints: function (n) { return 'רמזים (' + n + ')'; },
     winAdds: function (n) { return 'בקבוקים שנוספו (' + n + ')'; },
+    vialLabel: function (n) { return 'בקבוקון ' + n + ' (קיבולת 2)'; },
+    vialWord: 'בקבוקון',
     winBonus: function (n) { return 'בונוס על ' + n + ' מהלכים מתחת למינימום'; },
     winRecord: 'שיא חדש! עקפת את המינימום',
     winNoBonus: 'אין בונוס כשמוסיפים בקבוק',
@@ -150,82 +169,92 @@
   // however full). The rule is
   // a pure function of the board - no hidden "unlocked" flag - so Undo,
   // Restart, Add Bottle, Hint and stuck-detection all stay consistent for
-  // free. LOCKS is module-level data like CAPACITY (set per level by
+  // free. A VIAL never counts as a single-colour bottle for this rule (a
+  // 2-unit vial is trivially "one colour", which would let the player cheese
+  // the unlock by pouring two units into it), so solidCount skips vials.
+  // LOCKS is module-level data like CAPACITY (set per level by
   // generateLevel via setLocks); null = no locks.
   var LOCKS = null; // { idx: [bottle indices], need: N }
   function setLocks(idxList, need) {
     LOCKS = (idxList && idxList.length && need > 0) ? { idx: idxList.slice(), need: need } : null;
     if (global.WaterSort) global.WaterSort.LOCKS = LOCKS;
   }
-  function solidCount(bottles) {
+  function solidCount(bottles, caps) {
     var n = 0;
     for (var i = 0; i < bottles.length; i++) {
       var s = bottles[i];
       if (s.length === 0) continue;
+      if (isVial(caps, i)) continue;
       var ok = true;
       for (var j = 1; j < s.length; j++) if (s[j] !== s[0]) { ok = false; break; }
       if (ok) n++;
     }
     return n;
   }
-  function locksActive(bottles) {
-    return !!LOCKS && solidCount(bottles) < LOCKS.need;
+  function locksActive(bottles, caps) {
+    return !!LOCKS && solidCount(bottles, caps) < LOCKS.need;
   }
-  function isLocked(bottles, idx) {
-    return locksActive(bottles) && LOCKS.idx.indexOf(idx) !== -1;
+  function isLocked(bottles, idx, caps) {
+    return locksActive(bottles, caps) && LOCKS.idx.indexOf(idx) !== -1;
   }
 
   // Returns list of legal "forward" moves [from, to] for a given state
-  function legalMoves(bottles) {
+  function legalMoves(bottles, caps) {
     var moves = [];
-    var lockOn = locksActive(bottles);
+    var lockOn = locksActive(bottles, caps);
     for (var from = 0; from < bottles.length; from++) {
       if (bottles[from].length === 0) continue;
       if (lockOn && LOCKS.idx.indexOf(from) !== -1) continue;
       for (var to = 0; to < bottles.length; to++) {
         if (to === from) continue;
         if (lockOn && LOCKS.idx.indexOf(to) !== -1) continue;
-        if (canPourBasic(bottles, from, to)) moves.push([from, to]);
+        if (canPourBasic(bottles, from, to, caps)) moves.push([from, to]);
       }
     }
     return moves;
   }
 
-  function canPourBasic(bottles, from, to) {
+  function canPourBasic(bottles, from, to, caps) {
     var src = bottles[from], dst = bottles[to];
     if (src.length === 0) return false;
-    if (dst.length >= CAPACITY) return false;
+    if (dst.length >= capOf(caps, to)) return false;
     var topColor = src[src.length - 1];
     if (dst.length === 0) return true;
     var dstTop = dst[dst.length - 1];
     return dstTop === topColor;
   }
 
-  function canPour(bottles, from, to) {
+  function canPour(bottles, from, to, caps) {
     if (from === to) return false;
-    if (LOCKS && (isLocked(bottles, from) || isLocked(bottles, to))) return false;
-    return canPourBasic(bottles, from, to);
+    if (LOCKS && (isLocked(bottles, from, caps) || isLocked(bottles, to, caps))) return false;
+    return canPourBasic(bottles, from, to, caps);
   }
 
   // Perform a pour, returns { moved, newBottles } - does not mutate input
-  function pour(bottles, from, to) {
+  // Moves as many units of the source's top run as fit in the destination's
+  // OWN capacity (a run of 3 into a vial with 2 free moves 2, leaves 1).
+  function pour(bottles, from, to, caps) {
     var b = bottles.map(function (s) { return s.slice(); });
     var src = b[from], dst = b[to];
-    if (!canPour(b, from, to)) return { moved: 0, bottles: b };
+    if (!canPour(b, from, to, caps)) return { moved: 0, bottles: b };
+    var dstCap = capOf(caps, to);
     var topColor = src[src.length - 1];
     var moved = 0;
-    while (src.length > 0 && src[src.length - 1] === topColor && dst.length < CAPACITY) {
+    while (src.length > 0 && src[src.length - 1] === topColor && dst.length < dstCap) {
       dst.push(src.pop());
       moved++;
     }
     return { moved: moved, bottles: b };
   }
 
-  // Check win: every bottle empty or full with 4 identical
-  function isSolved(bottles) {
+  // Check win: every bottle empty or full with one colour. A vial can never
+  // hold a full colour (colours have CAPACITY units), so a non-empty vial
+  // always means "not solved": it must be emptied again.
+  function isSolved(bottles, caps) {
     for (var i = 0; i < bottles.length; i++) {
       var s = bottles[i];
       if (s.length === 0) continue;
+      if (isVial(caps, i)) return false;
       if (s.length !== CAPACITY) return false;
       for (var j = 1; j < s.length; j++) if (s[j] !== s[0]) return false;
     }
@@ -836,6 +865,9 @@
     scrambleBoard: scrambleBoard,
     getReverseMoves: getReverseMoves,
     countRuns: countRuns,
+    VIAL_CAPACITY: VIAL_CAPACITY,
+    capOf: capOf,
+    isVial: isVial,
     setCapacity: setCapacity,
     setLocks: setLocks,
     solidCount: solidCount,
@@ -863,7 +895,8 @@
       totalUndos: 0,
       bestMovesPerLevel: {},
       currentStreak: 0,
-      longestStreak: 0
+      longestStreak: 0,
+      totalVials: 0 // vials used (store only, no UI)
     };
   }
 
@@ -1048,6 +1081,9 @@
     par: null,
     undosLeft: 5,
     addsLeft: 2,
+    vialsLeft: 1,
+    caps: [],
+    capacity: 4,
     hintsLeft: 3,
     history: [], // stack of {bottles, moves}
     muted: false,
@@ -1115,6 +1151,9 @@
   // ONLY if no bottle was added in the level (an extra bottle makes shorter
   // solutions possible); with any bottle added, below-par finishes score as
   // exactly par. Hints do not block the bonus (they still cost 10 each).
+  // The small vial (see VIAL_CAPACITY) is COMPLETELY FREE: no deduction, and
+  // it does not block the below-par bonus; it is deliberately not an input
+  // of this function.
   // Undo: undone moves cost nothing - only the FINAL move count
   // (the counter goes down on undo) is compared with par. Hints stay paid
   // even if the move is undone. Added bottles are counted net (Undo of an
@@ -1142,6 +1181,7 @@
   // ---------- Level setup ----------
   var UNDOS_PER_LEVEL = 5;
   var ADDS_PER_LEVEL = 2;
+  var VIALS_PER_LEVEL = 1;
   var HINTS_PER_LEVEL = 3;
 
   function startLevel(levelNum) {
@@ -1159,6 +1199,8 @@
     state.moves = 0;
     state.undosLeft = UNDOS_PER_LEVEL;
     state.addsLeft = ADDS_PER_LEVEL;
+    state.vialsLeft = VIALS_PER_LEVEL;
+    state.caps = gen.bottles.map(function () { return gen.capacity; });
     state.hintsLeft = HINTS_PER_LEVEL;
     state.history = [];
     state.won = false;
@@ -1182,6 +1224,8 @@
     el.restartBtn = document.getElementById('btn-restart');
     el.addBtn = document.getElementById('btn-add');
     el.addCount = document.getElementById('add-count');
+    el.vialBtn = document.getElementById('btn-vial');
+    el.vialCount = document.getElementById('vial-count');
     el.hintBtn = document.getElementById('btn-hint');
     el.hintCount = document.getElementById('hint-count');
     el.muteBtn = document.getElementById('btn-mute');
@@ -1213,8 +1257,8 @@
   function levelProgressPct() {
     if (!state.bottles.length) return 0;
     var complete = 0;
-    state.bottles.forEach(function (stack) {
-      if (stack.length === state.capacity) {
+    state.bottles.forEach(function (stack, i) {
+      if (stack.length === state.capacity && !global.WaterSort.isVial(state.caps, i)) {
         var c = stack[0], ok = true;
         for (var i = 1; i < stack.length; i++) { if (stack[i] !== c) { ok = false; break; } }
         if (ok) complete++;
@@ -1232,9 +1276,11 @@
     el.best.textContent = state.bestScore;
     el.undoCount.textContent = state.undosLeft;
     el.addCount.textContent = state.addsLeft;
+    el.vialCount.textContent = state.vialsLeft;
     el.hintCount.textContent = state.hintsLeft;
     el.undoBtn.disabled = state.undosLeft <= 0 || state.history.length === 0;
     el.addBtn.disabled = state.addsLeft <= 0 || state.animating;
+    el.vialBtn.disabled = state.vialsLeft <= 0 || state.animating || state.won;
     el.hintBtn.disabled = state.hintsLeft <= 0;
     el.muteBtn.setAttribute('aria-pressed', String(state.muted));
     el.cbBtn.setAttribute('aria-pressed', String(state.colorblind));
@@ -1282,7 +1328,8 @@
     el.board.innerHTML = '';
     el.board.className = 'board bottles-' + state.bottles.length;
     var ws = global.WaterSort;
-    var lockedNow = state.bottles.map(function (st, i) { return ws.isLocked(state.bottles, i); });
+    var lockedNow = state.bottles.map(function (st, i) { return ws.isLocked(state.bottles, i, state.caps); });
+    el.board.style.setProperty('--cap', state.capacity);
     state.bottles.forEach(function (stack, idx) {
       var node = buildBottleEl(stack, idx, lockedNow[idx]);
       // a bottle that was locked on the previous render and is open now
@@ -1318,6 +1365,12 @@
     s.setProperty('--bw', bw + 'px');
     s.setProperty('--bh', bh + 'px');
     s.setProperty('--bd', (bw < 46 ? 2 : 3) + 'px');
+    // The vial: ~2 units tall (one unit = bh / capacity), narrower than a
+    // bottle, never squatter than it is wide. Bottom-aligned by the wrap.
+    var vw = Math.max(18, Math.round(bw * 0.66));
+    var vh = Math.max(Math.round(2 * bh / state.capacity), Math.round(vw * 0.95));
+    s.setProperty('--vw', vw + 'px');
+    s.setProperty('--vh', vh + 'px');
     s.setProperty('--gx', gx + 'px');
     s.setProperty('--gy', gy + 'px');
     s.setProperty('--lift', lift + 'px');
@@ -1327,7 +1380,7 @@
     if (!el.lockNote) return;
     document.body.classList.toggle('has-locks', !!state.locks);
     if (!state.locks) { el.lockNote.hidden = true; return; }
-    var have = global.WaterSort.solidCount(state.bottles);
+    var have = global.WaterSort.solidCount(state.bottles, state.caps);
     el.lockNote.hidden = false;
     var shown = Math.min(have, state.locks.need);
     var open = have >= state.locks.need;
@@ -1342,7 +1395,8 @@
     el.lockNote.classList.toggle('open', have >= state.locks.need);
   }
 
-  function isComplete(stack) {
+  function isComplete(stack, idx) {
+    if (global.WaterSort.isVial(state.caps, idx)) return false; // a vial never "completes"
     if (stack.length !== state.capacity) return false;
     for (var i = 1; i < stack.length; i++) { if (stack[i] !== stack[0]) return false; }
     return true;
@@ -1350,22 +1404,24 @@
 
   function buildBottleEl(stack, idx, locked) {
     var wrap = document.createElement('div');
-    wrap.className = 'bottle-wrap';
+    var cap = global.WaterSort.capOf(state.caps, idx);
+    var vial = global.WaterSort.isVial(state.caps, idx);
+    wrap.className = 'bottle-wrap' + (vial ? ' vial-wrap' : '');
     var bottle = document.createElement('div');
-    bottle.className = 'bottle';
+    bottle.className = 'bottle' + (vial ? ' vial' : '');
     if (idx === state.selected) bottle.classList.add('selected');
-    if (isComplete(stack)) bottle.classList.add('complete');
+    if (isComplete(stack, idx)) bottle.classList.add('complete');
     bottle.dataset.index = String(idx);
     bottle.setAttribute('role', 'button');
     bottle.setAttribute('tabindex', '0');
-    bottle.setAttribute('aria-label', locked ? STR.lockedLabel(idx + 1) : STR.bottleLabel(idx + 1));
+    bottle.setAttribute('aria-label', locked ? STR.lockedLabel(idx + 1) : (vial ? STR.vialLabel(idx + 1) : STR.bottleLabel(idx + 1)));
     if (locked) {
       bottle.classList.add('locked');
       var badge = document.createElement('div');
       badge.className = 'lock-badge';
       badge.setAttribute('aria-hidden', 'true');
       badge.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M7 10V8a5 5 0 0 1 10 0v2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><rect x="4.5" y="10" width="15" height="11" rx="2.5" fill="currentColor"/><circle cx="12" cy="15.5" r="1.7" fill="#1a1d2e"/></svg>' +
-        '<span class="lock-need">' + Math.max(0, state.locks.need - global.WaterSort.solidCount(state.bottles)) + '</span>';
+        '<span class="lock-need">' + Math.max(0, state.locks.need - global.WaterSort.solidCount(state.bottles, state.caps)) + '</span>';
       bottle.appendChild(badge);
     }
 
@@ -1380,7 +1436,7 @@
       }
     }
 
-    for (var pos = 0; pos < state.capacity; pos++) {
+    for (var pos = 0; pos < cap; pos++) {
       var seg = document.createElement('div');
       seg.className = 'segment empty-seg';
       if (pos < stack.length) {
@@ -1449,8 +1505,10 @@
   function pushHistory() {
     state.history.push({
       bottles: state.bottles.map(function (s) { return s.slice(); }),
+      caps: state.caps.slice(),
       moves: state.moves,
-      addsLeft: state.addsLeft
+      addsLeft: state.addsLeft,
+      vialsLeft: state.vialsLeft
     });
   }
 
@@ -1483,7 +1541,7 @@
     clearHint();
     if (state.selected === -1) {
       if (state.bottles[idx].length === 0) return;
-      if (global.WaterSort.isLocked(state.bottles, idx)) {
+      if (global.WaterSort.isLocked(state.bottles, idx, state.caps)) {
         // a locked bottle can't be picked up: say so visibly
         requestAnimationFrame(function () { sounds.error(); });
         shake(el.board.children[idx]);
@@ -1502,11 +1560,11 @@
       return;
     }
     var ws = global.WaterSort;
-    if (ws.canPour(state.bottles, state.selected, idx)) {
+    if (ws.canPour(state.bottles, state.selected, idx, state.caps)) {
       var fromIdx = state.selected;
       setSelectedVisual(fromIdx, false);
       pushHistory();
-      var result = ws.pour(state.bottles, fromIdx, idx);
+      var result = ws.pour(state.bottles, fromIdx, idx, state.caps);
       var movedColor = state.bottles[fromIdx][state.bottles[fromIdx].length - 1];
       state.bottles = result.bottles;
       state.moves++;
@@ -1515,14 +1573,14 @@
       requestAnimationFrame(function () { sounds.pour(); });
       animatePourTransition(fromIdx, idx, movedColor, result.moved, function () {
         render();
-        if (isComplete(state.bottles[idx])) {
+        if (isComplete(state.bottles[idx], idx)) {
           var doneB = el.board.children[idx] && el.board.children[idx].querySelector('.bottle');
           if (doneB) {
             doneB.classList.add('complete-pop');
             setTimeout(function () { doneB.classList.remove('complete-pop'); }, 320);
           }
         }
-        if (ws.isSolved(state.bottles)) {
+        if (ws.isSolved(state.bottles, state.caps)) {
           setTimeout(onWin, 350);
         }
       });
@@ -1571,6 +1629,7 @@
 
     state.animating = true;
     if (el.addBtn) el.addBtn.disabled = true;
+    if (el.vialBtn) el.vialBtn.disabled = true;
     var streamEl = null;
     var finished = false;
     function cleanupAndFinish() {
@@ -1583,6 +1642,7 @@
       if (streamEl && streamEl.parentNode) streamEl.parentNode.removeChild(streamEl);
       state.animating = false;
       if (el.addBtn) el.addBtn.disabled = state.addsLeft <= 0;
+      if (el.vialBtn) el.vialBtn.disabled = state.vialsLeft <= 0 || state.won;
       done();
     }
     // Absolute safety net: even if a rect/layout read throws, or a timer is
@@ -1685,6 +1745,11 @@
     state.bottles = prev.bottles;
     state.moves = prev.moves;
     if (typeof prev.addsLeft === 'number') state.addsLeft = prev.addsLeft;
+    if (prev.caps) state.caps = prev.caps;
+    if (typeof prev.vialsLeft === 'number') {
+      if (prev.vialsLeft > state.vialsLeft && state.stats.totalVials > 0) state.stats.totalVials--; // undone add
+      state.vialsLeft = prev.vialsLeft;
+    }
     state.undosLeft--;
     state.stats.totalUndos++;
     state.selected = -1;
@@ -1704,18 +1769,35 @@
     pushHistory(); // snapshot BEFORE spending the add so Undo restores the count
     state.addsLeft--;
     state.bottles.push([]);
+    state.caps.push(state.capacity);
+    render();
+  }
+
+  // The small vial: one per level, capacity 2, free (no score effect), and
+  // independent of the add-bottle quota. Undoable like Add Bottle.
+  function onAddVial() {
+    if (state.animating || state.won || state.vialsLeft <= 0) return;
+    pushHistory();
+    state.vialsLeft--;
+    state.stats.totalVials = (state.stats.totalVials || 0) + 1;
+    state.bottles.push([]);
+    state.caps.push(global.WaterSort.VIAL_CAPACITY);
+    saveProgress();
     render();
   }
 
   function onHint() {
     if (state.animating || state.hintsLeft <= 0) return;
-    var moves = global.WaterSort.legalMoves(state.bottles);
+    var moves = global.WaterSort.legalMoves(state.bottles, state.caps);
+    // Hints avoid parking liquid in the vial while any other move exists
+    var vialFree = moves.filter(function (m) { return !global.WaterSort.isVial(state.caps, m[1]); });
+    if (vialFree.length) moves = vialFree;
     // Prefer a move that empties a bottle or completes a color for better hints
     if (moves.length === 0) return;
     var best = moves[0];
     for (var i = 0; i < moves.length; i++) {
-      var res = global.WaterSort.pour(state.bottles, moves[i][0], moves[i][1]);
-      if (global.WaterSort.isSolved(res.bottles)) { best = moves[i]; break; }
+      var res = global.WaterSort.pour(state.bottles, moves[i][0], moves[i][1], state.caps);
+      if (global.WaterSort.isSolved(res.bottles, state.caps)) { best = moves[i]; break; }
     }
     state.hintsLeft--;
     state.stats.totalHints++;
@@ -1741,7 +1823,7 @@
 
   function checkStuck() {
     if (state.won) { el.stuckBanner.hidden = true; return; }
-    var moves = global.WaterSort.legalMoves(state.bottles);
+    var moves = global.WaterSort.legalMoves(state.bottles, state.caps);
     el.stuckBanner.hidden = moves.length > 0;
   }
 
@@ -1878,6 +1960,7 @@
     onFastTap(el.undoBtn, onUndo);
     onFastTap(el.restartBtn, onRestart);
     onFastTap(el.addBtn, onAddBottle);
+    onFastTap(el.vialBtn, onAddVial);
     onFastTap(el.hintBtn, onHint);
     onFastTap(el.muteBtn, onMuteToggle);
     onFastTap(el.cbBtn, onColorblindToggle);
