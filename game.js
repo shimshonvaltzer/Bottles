@@ -1079,7 +1079,6 @@
     animating: false,
     moves: 0,
     par: null,
-    undosLeft: 5,
     addsLeft: 2,
     vialsLeft: 1,
     caps: [],
@@ -1179,7 +1178,6 @@
   }
 
   // ---------- Level setup ----------
-  var UNDOS_PER_LEVEL = 5;
   var ADDS_PER_LEVEL = 2;
   var VIALS_PER_LEVEL = 1;
   var HINTS_PER_LEVEL = 3;
@@ -1197,7 +1195,6 @@
     state.animating = false;
     state.par = gen.par;
     state.moves = 0;
-    state.undosLeft = UNDOS_PER_LEVEL;
     state.addsLeft = ADDS_PER_LEVEL;
     state.vialsLeft = VIALS_PER_LEVEL;
     state.caps = gen.bottles.map(function () { return gen.capacity; });
@@ -1220,7 +1217,6 @@
     el.winBreakdown = document.getElementById('win-breakdown');
     el.best = document.getElementById('stat-best');
     el.undoBtn = document.getElementById('btn-undo');
-    el.undoCount = document.getElementById('undo-count');
     el.restartBtn = document.getElementById('btn-restart');
     el.addBtn = document.getElementById('btn-add');
     el.addCount = document.getElementById('add-count');
@@ -1274,11 +1270,10 @@
     el.par.textContent = state.par ? '/' + state.par : '';
     el.parBox.title = state.par ? STR.parLabel(state.par) : '';
     el.best.textContent = state.bestScore;
-    el.undoCount.textContent = state.undosLeft;
     el.addCount.textContent = state.addsLeft;
     el.vialCount.textContent = state.vialsLeft;
     el.hintCount.textContent = state.hintsLeft;
-    el.undoBtn.disabled = state.undosLeft <= 0 || state.history.length === 0;
+    el.undoBtn.disabled = state.history.length === 0 || state.animating;
     el.addBtn.disabled = state.addsLeft <= 0 || state.animating;
     el.vialBtn.disabled = state.vialsLeft <= 0 || state.animating || state.won;
     el.hintBtn.disabled = state.hintsLeft <= 0;
@@ -1740,7 +1735,7 @@
   }
 
   function onUndo() {
-    if (state.animating || state.undosLeft <= 0 || state.history.length === 0) return;
+    if (state.animating || state.history.length === 0) return;
     var prev = state.history.pop();
     state.bottles = prev.bottles;
     state.moves = prev.moves;
@@ -1750,7 +1745,6 @@
       if (prev.vialsLeft > state.vialsLeft && state.stats.totalVials > 0) state.stats.totalVials--; // undone add
       state.vialsLeft = prev.vialsLeft;
     }
-    state.undosLeft--;
     state.stats.totalUndos++;
     state.selected = -1;
     clearHint();
