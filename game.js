@@ -1347,10 +1347,14 @@
     var b = el.board;
     if (!b || !state.bottles.length) return;
     var mainEl = b.parentNode, cs = window.getComputedStyle(mainEl);
-    var W = mainEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), H = b.clientHeight;
+    var W = mainEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    // locked bottles carry their padlock above the mouth: reserve that room
+    var lockRoom = state.locks ? 20 : 0;
+    b.style.paddingTop = lockRoom ? lockRoom + 'px' : '';
+    var H = b.clientHeight - lockRoom;
     if (!W || !H) return;
     var n = state.bottles.length, cols = n >= 15 ? 6 : 5, rows = Math.ceil(n / cols);
-    var gx = W < 340 ? 6 : 8, gy = rows > 2 ? 6 : (rows === 2 ? 12 : 10), lift = 10;
+    var gx = W < 340 ? 6 : 8, gy = (rows > 2 ? 6 : (rows === 2 ? 12 : 10)) + (lockRoom ? 14 : 0), lift = 10;
     var bhAvail = Math.floor((H - (rows - 1) * gy) / rows - lift);
     var bw = Math.floor(Math.min(80, (W - (cols - 1) * gx) / cols, bhAvail / 2.5));
     var bh = Math.floor(Math.min(bhAvail, bw * (rows === 1 ? 3.4 : 3.1)));
